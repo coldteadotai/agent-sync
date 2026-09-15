@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { CommandDef, ExitCode } from "../main.js";
 import { loadBundleFromBuffer, loadBundleFromDirectory, type LoadedBundle } from "../apply/bundle.js";
 import { executeApply, gateSettingsHooks, planApply } from "../apply/apply.js";
+import { planMcpRegistrations, runMcpRegistration } from "../apply/mcp.js";
 
 const HELP = [
   "Usage: agent-sync apply <bundle> [flags]",
@@ -19,6 +20,7 @@ const HELP = [
   "Flags:",
   "  --target <dir>  Directory to apply into (default: ~/.claude, honoring CLAUDE_CONFIG_DIR)",
   "  --hook <name>   Re-confirm one hook from the bundle (repeatable), e.g. --hook hooks.PostToolUse",
+  "  --mcp <name>    Register one portable MCP server via `claude mcp add` (repeatable, name + URL only)",
   "  --dry-run       Print what would change and write nothing",
   "  --help          Show help",
 ].join("\n");
@@ -30,6 +32,7 @@ export const applyCommand: CommandDef = {
   flags: {
     target: { type: "string", description: "Directory to apply into" },
     hook: { type: "string", description: "Re-confirm one hook from the bundle (repeatable)", multiple: true },
+    mcp: { type: "string", description: "Register one portable MCP server from the manifest (repeatable)", multiple: true },
     "dry-run": { type: "boolean", description: "Print what would change and write nothing" },
   },
   async run({ positionals, values, io }): Promise<ExitCode> {
@@ -50,11 +53,21 @@ export const applyCommand: CommandDef = {
         ? [hookValues]
         : [];
 
+    const mcpValues = values.mcp;
+    const requestedMcp = Array.isArray(mcpValues)
+      ? mcpValues.filter((value): value is string => typeof value === "string")
+      : typeof mcpValues === "string"
+        ? [mcpValues]
+        : [];
+
     const bundle = await loadBundle(source);
     const withheld = gateSettingsHooks(bundle, confirmedHooks);
     for (const name of withheld) {
       io.out(`Withheld ${name}: hooks run shell commands, so re-confirm with --hook ${name} to apply it.`);
     }
+    // Registrations are validated before any file write so a bad --mcp refuses
+    // the whole apply, not half of it.
+    const registrations = planMcpRegistrations(bundle.manifest.mcpServers, requestedMcp);
     const plan = planApply(bundle, targetDir);
 
     const creates = plan.actions.filter((action) => action.kind === "create");
@@ -66,22 +79,50 @@ export const applyCommand: CommandDef = {
         `${plan.addedSinceLast.length} new since last apply: ${plan.addedSinceLast.join(", ")}`,
       );
     }
+
     if (creates.length === 0 && updates.length === 0) {
       io.out(`Nothing to change in ${targetDir}; the bundle is already applied.`);
-      return 0;
+    } else {
+      io.out(`${dryRun ? "Would apply" : "Applying"} to ${targetDir}:`);
+      for (const action of plan.actions) {
+        if (action.kind !== "unchanged") io.out(`  ${action.kind.padEnd(7)} ${action.path}`);
+      }
+      if (!dryRun) {
+        const marker = executeApply(bundle, targetDir, plan);
+        if (marker !== null && marker.updated.length > 0) {
+          io.out(`Backed up ${marker.updated.length} overwritten file(s); \`agent-sync undo\` restores them.`);
+        }
+        io.out(`Done: ${creates.length} created, ${updates.length} updated.`);
+      }
     }
 
-    io.out(`${dryRun ? "Would apply" : "Applying"} to ${targetDir}:`);
-    for (const action of plan.actions) {
-      if (action.kind !== "unchanged") io.out(`  ${action.kind.padEnd(7)} ${action.path}`);
+    let failedRegistrations = 0;
+    for (const registration of registrations) {
+      if (dryRun) {
+        io.out(`Would register MCP server ${registration.name}: claude ${registration.args.join(" ")}`);
+        continue;
+      }
+      try {
+        runMcpRegistration(registration);
+        io.out(`Registered MCP server ${registration.name} (user scope). \`agent-sync undo\` does not remove it; use \`claude mcp remove ${registration.name}\`.`);
+      } catch (error) {
+        failedRegistrations += 1;
+        io.err(`apply: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
-    if (dryRun) return 0;
 
-    const marker = executeApply(bundle, targetDir, plan);
-    if (marker !== null && marker.updated.length > 0) {
-      io.out(`Backed up ${marker.updated.length} overwritten file(s); \`agent-sync undo\` restores them.`);
+    const unregistered = bundle.manifest.mcpServers.filter(
+      (server) => server.status === "candidate" && server.url !== undefined && !requestedMcp.includes(server.name),
+    );
+    if (unregistered.length > 0) {
+      io.out(
+        `Bundle records ${unregistered.length} portable MCP server(s) not registered; pass --mcp <name> to register: ${unregistered.map((server) => server.name).join(", ")}`,
+      );
     }
-    io.out(`Done: ${creates.length} created, ${updates.length} updated.`);
+    if (failedRegistrations > 0) {
+      io.err(`apply: ${failedRegistrations} MCP registration(s) failed; files were applied and stay applied.`);
+      return 2;
+    }
     return 0;
   },
 };

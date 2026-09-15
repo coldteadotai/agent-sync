@@ -4,7 +4,8 @@ import { exportCommand } from "./commands/export.js";
 import { applyCommand } from "./commands/apply.js";
 import { undoCommand } from "./commands/undo.js";
 
-export { classifyMcpServer, isSensitiveKey, scanSecretReferences } from "./scan/classify.js";
+export { classifyMcpServer, isSensitiveKey, sanitizeRemoteEndpoint, scanSecretReferences } from "./scan/classify.js";
+export { planMcpRegistrations } from "./apply/mcp.js";
 export { scanClaudeCode, PORTABLE_SETTINGS_KEYS } from "./scan/scanner.js";
 export type { ScanReport, ScanItem } from "./scan/types.js";
 export { collectExport, MANIFEST_SCHEMA_VERSION } from "./export/collect.js";

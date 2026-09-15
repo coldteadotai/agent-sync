@@ -4,6 +4,84 @@ export interface McpClassification {
   status: "candidate" | "needs_secret" | "blocked" | "unsupported";
   reason: string;
   envRefs: string[];
+  url?: string;
+  transport?: "http" | "sse";
+}
+
+export interface EndpointCheck {
+  ok: boolean;
+  url?: string;
+  reason?: string;
+}
+
+// A URL is only re-declarable when it cannot carry a secret (no userinfo, no
+// query, no fragment) and cannot point back into a machine or network the
+// bundle's author shouldn't reach (loopback, link-local, RFC1918). This is the
+// single check both export and apply run, so the apply side is a complete
+// re-derivation of the untrusted manifest, not a partial one.
+export function sanitizeRemoteEndpoint(raw: string): EndpointCheck {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false, reason: "URL does not parse" };
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return { ok: false, reason: "URL is not http(s)" };
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    return { ok: false, reason: "URL embeds credentials" };
+  }
+  if (parsed.search !== "" || parsed.hash !== "") {
+    return { ok: false, reason: "URL carries query or fragment parameters" };
+  }
+  if (isPrivateHost(parsed.hostname)) {
+    return { ok: false, reason: "URL points at a local or private address" };
+  }
+  return { ok: true, url: parsed.toString() };
+}
+
+function isPrivateHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host.endsWith(".localhost") || host === "") return true;
+  // IPv6 rules only apply to actual IPv6 literals; "fd.io" is a DNS name.
+  if (host.includes(":")) return isPrivateIpv6(host);
+  return isPrivateIpv4(host);
+}
+
+function isPrivateIpv4(host: string): boolean {
+  const octets = host.split(".").map(Number);
+  if (octets.length !== 4 || !octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)) {
+    return false;
+  }
+  const [a = 0, b = 0] = octets;
+  if (a === 127 || a === 0 || a === 10) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return a === 192 && b === 168;
+}
+
+function isPrivateIpv6(host: string): boolean {
+  if (host === "::1" || host === "::") return true;
+  if (host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) return true;
+  // IPv4-mapped (::ffff:a.b.c.d) and the deprecated IPv4-compatible (::a.b.c.d)
+  // forms carry an embedded v4 address that must pass the v4 check. URL
+  // canonicalizes both to hex groups.
+  const mapped = host.match(/^::(?:ffff:)?(.+)$/);
+  if (mapped?.[1] !== undefined) {
+    const rest = mapped[1];
+    if (rest.includes(".")) return isPrivateIpv4(rest);
+    const groups = rest.split(":");
+    if (groups.length === 2) {
+      const high = Number.parseInt(groups[0] ?? "", 16);
+      const low = Number.parseInt(groups[1] ?? "", 16);
+      if (Number.isInteger(high) && Number.isInteger(low)) {
+        return isPrivateIpv4(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+      }
+    }
+    return true;
+  }
+  return false;
 }
 
 const SENSITIVE_KEY_NEEDLES = [
@@ -146,11 +224,27 @@ export function classifyMcpServer(value: JsonValue): McpClassification {
   }
 
   if (hasRemoteUrl) {
-    return {
+    const record = value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+    const rawUrl = record !== null && typeof record.url === "string" ? record.url : null;
+    const endpoint = rawUrl === null ? null : sanitizeRemoteEndpoint(rawUrl);
+    if (endpoint !== null && !endpoint.ok && endpoint.reason !== "URL does not parse") {
+      return {
+        status: "needs_secret",
+        reason: `${endpoint.reason ?? "Server URL is not clean"}; re-add this server manually on the target.`,
+        envRefs: secrets.envRefs,
+      };
+    }
+    const transportValue = record === null ? null : (record.type ?? record.transport);
+    const classification: McpClassification = {
       status: "candidate",
       reason: "Remote endpoint with no local-only dependency.",
       envRefs: secrets.envRefs,
     };
+    if (endpoint !== null && endpoint.ok && endpoint.url !== undefined) {
+      classification.url = endpoint.url;
+      classification.transport = transportValue === "sse" ? "sse" : "http";
+    }
+    return classification;
   }
 
   return {

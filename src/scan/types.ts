@@ -11,6 +11,8 @@ export interface ScanItem {
   status: SyncStatus;
   reason: string;
   envRefs?: string[];
+  url?: string;
+  transport?: "http" | "sse";
 }
 
 export interface ExcludedPath {
