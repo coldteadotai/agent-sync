@@ -1,10 +1,22 @@
 export interface TarEntry {
   path: string;
   content: Buffer | null;
+  executable?: boolean;
+}
+
+export function isRepresentablePath(name: string): boolean {
+  try {
+    splitName(name);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const BLOCK = 512;
+// Modes are normalized from a single input bit so identical input yields identical bytes.
 const FILE_MODE = 0o644;
+const EXEC_MODE = 0o755;
 const DIR_MODE = 0o755;
 
 // Minimal deterministic ustar writer: sorted entries, mtime 0, uid/gid 0,
@@ -15,7 +27,8 @@ export function createTar(entries: TarEntry[]): Buffer {
   for (const entry of sorted) {
     const isDirectory = entry.content === null;
     const name = isDirectory ? `${entry.path.replace(/\/+$/, "")}/` : entry.path;
-    blocks.push(header(name, isDirectory ? 0 : entry.content!.length, isDirectory));
+    const mode = isDirectory ? DIR_MODE : entry.executable === true ? EXEC_MODE : FILE_MODE;
+    blocks.push(header(name, isDirectory ? 0 : entry.content!.length, isDirectory, mode));
     if (!isDirectory && entry.content!.length > 0) {
       blocks.push(entry.content!);
       const remainder = entry.content!.length % BLOCK;
@@ -26,11 +39,11 @@ export function createTar(entries: TarEntry[]): Buffer {
   return Buffer.concat(blocks);
 }
 
-function header(name: string, size: number, isDirectory: boolean): Buffer {
+function header(name: string, size: number, isDirectory: boolean, mode: number): Buffer {
   const [entryName, prefix] = splitName(name);
   const block = Buffer.alloc(BLOCK);
   block.write(entryName, 0, 100, "utf8");
-  writeOctal(block, 100, 8, isDirectory ? DIR_MODE : FILE_MODE);
+  writeOctal(block, 100, 8, mode);
   writeOctal(block, 108, 8, 0);
   writeOctal(block, 116, 8, 0);
   writeOctal(block, 124, 12, size);

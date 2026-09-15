@@ -116,5 +116,10 @@ async function runCommand(command: CommandDef, argv: string[], io: CommandIo): P
     io.out(command.help);
     return 0;
   }
-  return command.run({ positionals: parsed.positionals, values: parsed.values, io });
+  try {
+    return await command.run({ positionals: parsed.positionals, values: parsed.values, io });
+  } catch (error) {
+    io.err(`${command.word}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
 }

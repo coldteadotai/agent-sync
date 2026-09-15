@@ -52,7 +52,10 @@ export const exportCommand: CommandDef = {
       for (const diagnostic of plan.diagnostics) io.err(`${diagnostic.severity}: ${diagnostic.message}`);
       return 2;
     }
-    if (plan.entries.length === 0) {
+    const manifestOnly =
+      plan.entries.length === 0 &&
+      (plan.manifest.mcpServers.length > 0 || plan.manifest.hooks.length > 0);
+    if (plan.entries.length === 0 && !manifestOnly) {
       io.err("export: nothing to pack. Run `agent-sync scan` to see what exists.");
       return 2;
     }
@@ -60,7 +63,13 @@ export const exportCommand: CommandDef = {
     // With dest "-", stdout is the tar stream; the summary goes to stderr.
     const summarize = dest === "-" && !dryRun ? io.err : io.out;
     if (values.json) {
-      summarize(JSON.stringify(plan.manifest, null, 2));
+      summarize(
+        JSON.stringify(
+          { manifest: plan.manifest, skipped: plan.skipped, diagnostics: plan.diagnostics },
+          null,
+          2,
+        ),
+      );
     } else {
       summarize(renderPlan(plan, dryRun));
     }
@@ -93,7 +102,7 @@ function buildTar(plan: ExportPlan, manifestBytes: Buffer): Buffer {
     for (let index = 1; index <= parts.length; index += 1) {
       directories.add(`files/${parts.slice(0, index).join("/")}`);
     }
-    entries.push({ path: `files/${entry.path}`, content: entry.content });
+    entries.push({ path: `files/${entry.path}`, content: entry.content, executable: entry.executable });
   }
   for (const directory of directories) entries.push({ path: directory, content: null });
   return createTar(entries);
@@ -105,7 +114,7 @@ function writeBundleDirectory(dest: string, plan: ExportPlan, manifestBytes: Buf
   for (const entry of plan.entries) {
     const target = join(dest, "files", ...entry.path.split("/"));
     mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, entry.content);
+    writeFileSync(target, entry.content, { mode: entry.executable ? 0o755 : 0o644 });
   }
 }
 

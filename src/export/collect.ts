@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isSensitiveKey, type JsonValue } from "../scan/classify.js";
+import { isRepresentablePath } from "./tar.js";
 import { PORTABLE_SETTINGS_KEYS, scanClaudeCode } from "../scan/scanner.js";
 import type { Diagnostic, ScanItem } from "../scan/types.js";
 
@@ -11,12 +12,22 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
 // Files matching these never enter a bundle, even inside a skill directory.
-const CREDENTIAL_FILE_PATTERNS = [/^\.env(\..*)?$/, /\.pem$/, /^id_[a-z0-9]+$/i, /^\.credentials\.json$/];
+const CREDENTIAL_FILE_PATTERNS = [
+  /^\.env(\..*)?$/,
+  /\.pem$/i,
+  /\.key$/i,
+  /\.p12$/i,
+  /\.pfx$/i,
+  /\.ppk$/i,
+  /^id_[a-z0-9_.-]+$/i,
+  /^\.credentials\.json$/,
+];
 
 export interface ManifestFile {
   path: string;
   sha256: string;
   size: number;
+  executable?: boolean;
 }
 
 export interface ManifestMcpServer {
@@ -43,6 +54,7 @@ export interface Manifest {
 export interface BundleEntry {
   path: string;
   content: Buffer;
+  executable: boolean;
 }
 
 export interface ExportPlan {
@@ -71,7 +83,11 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
   const diagnostics: Diagnostic[] = [...report.diagnostics];
   let totalBytes = 0;
 
-  const addFile = (bundlePath: string, content: Buffer): void => {
+  const addFile = (bundlePath: string, content: Buffer, executable: boolean): void => {
+    if (!isRepresentablePath(`files/${bundlePath}`)) {
+      skipped.push({ path: bundlePath, reason: "path too long for a tar archive" });
+      return;
+    }
     if (content.length > MAX_FILE_BYTES) {
       skipped.push({ path: bundlePath, reason: `larger than the ${MAX_FILE_BYTES} byte per-file limit` });
       return;
@@ -81,7 +97,7 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
       return;
     }
     totalBytes += content.length;
-    entries.push({ path: bundlePath, content });
+    entries.push({ path: bundlePath, content, executable });
   };
 
   const userItems = report.items.filter((item) => item.scope === "user");
@@ -108,18 +124,22 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
   const included = new Set(confirmedHooks.filter((name) => hookNames.has(name)));
 
   const settingsContent = buildPortableSettings(join(userDir, "settings.json"), included, diagnostics);
-  if (settingsContent !== null) addFile("settings.json", settingsContent);
+  if (settingsContent !== null) addFile("settings.json", settingsContent, false);
 
   const manifest: Manifest = {
     schemaVersion: MANIFEST_SCHEMA_VERSION,
     tool: "agent-sync",
     agent: "claude-code",
     files: entries
-      .map((entry) => ({
-        path: entry.path,
-        sha256: createHash("sha256").update(entry.content).digest("hex"),
-        size: entry.content.length,
-      }))
+      .map((entry) => {
+        const file: ManifestFile = {
+          path: entry.path,
+          sha256: createHash("sha256").update(entry.content).digest("hex"),
+          size: entry.content.length,
+        };
+        if (entry.executable) file.executable = true;
+        return file;
+      })
       .sort((a, b) => (a.path < b.path ? -1 : 1)),
     mcpServers: userItems
       .filter((item) => item.kind === "mcp_server")
@@ -140,7 +160,7 @@ function toManifestServer(item: ScanItem): ManifestMcpServer {
 function collectTree(
   root: string,
   bundleRoot: string,
-  addFile: (bundlePath: string, content: Buffer) => void,
+  addFile: (bundlePath: string, content: Buffer, executable: boolean) => void,
   skipped: { path: string; reason: string }[],
 ): void {
   let names: string[];
@@ -173,14 +193,14 @@ function collectTree(
       skipped.push({ path: bundlePath, reason: "not a regular file" });
       continue;
     }
-    addFile(bundlePath, readFileSync(sourcePath));
+    addFile(bundlePath, readFileSync(sourcePath), (stat.mode & 0o100) !== 0);
   }
 }
 
 function collectRegularFile(
   sourcePath: string,
   bundlePath: string,
-  addFile: (bundlePath: string, content: Buffer) => void,
+  addFile: (bundlePath: string, content: Buffer, executable: boolean) => void,
   skipped: { path: string; reason: string }[],
 ): void {
   const stat = lstatSync(sourcePath, { throwIfNoEntry: false });
@@ -189,7 +209,7 @@ function collectRegularFile(
     skipped.push({ path: bundlePath, reason: stat.isSymbolicLink() ? "symlink" : "not a regular file" });
     return;
   }
-  addFile(bundlePath, readFileSync(sourcePath));
+  addFile(bundlePath, readFileSync(sourcePath), (stat.mode & 0o100) !== 0);
 }
 
 function buildPortableSettings(
