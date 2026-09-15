@@ -64,9 +64,10 @@ function isPrivateIpv4(host: string): boolean {
 function isPrivateIpv6(host: string): boolean {
   if (host === "::1" || host === "::") return true;
   if (host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) return true;
-  // IPv4-mapped addresses (::ffff:a.b.c.d, canonicalized by URL to hex groups)
-  // carry an embedded v4 address that must pass the v4 check.
-  const mapped = host.match(/^::ffff:(.+)$/);
+  // IPv4-mapped (::ffff:a.b.c.d) and the deprecated IPv4-compatible (::a.b.c.d)
+  // forms carry an embedded v4 address that must pass the v4 check. URL
+  // canonicalizes both to hex groups.
+  const mapped = host.match(/^::(?:ffff:)?(.+)$/);
   if (mapped?.[1] !== undefined) {
     const rest = mapped[1];
     if (rest.includes(".")) return isPrivateIpv4(rest);

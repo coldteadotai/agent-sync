@@ -180,6 +180,10 @@ test("ipv4-mapped ipv6 loopback is refused and ipv6-looking domains are not", ()
     assert.equal(sanitizeRemoteEndpoint(url).ok, true, url);
   }
   assert.equal(sanitizeRemoteEndpoint("http://[::ffff:808:808]/mcp").ok, true, "mapped public v4 stays allowed");
+  assert.equal(sanitizeRemoteEndpoint("http://[::127.0.0.1]/mcp").ok, false, "deprecated compatible loopback refused");
+  assert.equal(sanitizeRemoteEndpoint("http://[::7f00:1]/mcp").ok, false, "canonicalized compatible loopback refused");
+  assert.equal(sanitizeRemoteEndpoint("http://[::808:808]/mcp").ok, true, "compatible public v4 stays allowed");
+  assert.equal(sanitizeRemoteEndpoint("http://[2001:db8::1]/mcp").ok, true, "ordinary public v6 stays allowed");
 });
 
 test("a crafted candidate manifest entry with a local url refuses registration", () => {
