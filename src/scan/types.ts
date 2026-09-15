@@ -2,7 +2,15 @@ export type Scope = "user" | "project";
 
 export type SyncStatus = "candidate" | "needs_secret" | "blocked" | "unsupported";
 
-export type ItemKind = "skill" | "subagent" | "command" | "memory" | "settings" | "hook" | "mcp_server";
+export type ItemKind =
+  | "skill"
+  | "subagent"
+  | "command"
+  | "memory"
+  | "settings"
+  | "hook"
+  | "mcp_server"
+  | "plugin";
 
 export interface ScanItem {
   name: string;
@@ -26,7 +34,7 @@ export interface Diagnostic {
 }
 
 export interface ScanReport {
-  agent: "claude-code" | "codex";
+  agent: "claude-code" | "codex" | "opencode";
   present: boolean;
   userDir: string;
   projectDir: string | null;

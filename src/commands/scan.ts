@@ -1,11 +1,13 @@
 import type { CommandDef, ExitCode } from "../main.js";
 import { scanClaudeCode } from "../scan/scanner.js";
 import { scanCodex } from "../scan/codex.js";
+import { scanOpencode } from "../scan/opencode.js";
 import type { ScanItem, ScanReport } from "../scan/types.js";
 
 const AGENT_TITLES: Record<ScanReport["agent"], string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
+  opencode: "OpenCode",
 };
 
 const HELP = [
@@ -50,6 +52,7 @@ export const scanCommand: CommandDef = {
     const reports = [
       scanClaudeCode(projectDir === undefined ? {} : { projectDir }),
       scanCodex(projectDir === undefined ? {} : { projectDir }),
+      scanOpencode(projectDir === undefined ? {} : { projectDir }),
     ];
 
     if (values.json) {

@@ -8,6 +8,7 @@ export { classifyMcpServer, isSensitiveKey, sanitizeRemoteEndpoint, scanSecretRe
 export { planMcpRegistrations } from "./apply/mcp.js";
 export { scanClaudeCode, PORTABLE_SETTINGS_KEYS } from "./scan/scanner.js";
 export { scanCodex, CODEX_PORTABLE_SETTINGS_KEYS } from "./scan/codex.js";
+export { scanOpencode, OPENCODE_PORTABLE_SETTINGS_KEYS, stripJsonc } from "./scan/opencode.js";
 export { parseToml } from "./scan/toml.js";
 export type { ScanReport, ScanItem } from "./scan/types.js";
 export { collectExport, MANIFEST_SCHEMA_VERSION } from "./export/collect.js";
