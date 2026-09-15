@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -38,10 +39,15 @@ export interface ApplyPlan {
 export function planApply(bundle: LoadedBundle, targetDir: string): ApplyPlan {
   const actions: ApplyAction[] = [];
   for (const [path, payload] of [...bundle.files.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
-    const destination = resolveInside(targetDir, path);
+    // Planning runs the same write checks execution will, so a dry run and a
+    // real apply always reach the same verdict.
+    const destination = resolveForWrite(targetDir, path);
     if (!existsSync(destination)) {
       actions.push({ path, kind: "create" });
       continue;
+    }
+    if (statSync(destination).isDirectory()) {
+      throw new Error(`Refusing to apply: ${path} exists as a directory in the target. Nothing was written.`);
     }
     const current = readFileSync(destination);
     const sameContent = current.equals(payload.content);
@@ -197,12 +203,19 @@ export function gateSettingsHooks(bundle: LoadedBundle, confirmedHooks: string[]
   if (withheld.length === 0) return [];
   if (Object.keys(settings).length === 0) {
     bundle.files.delete("settings.json");
+    bundle.manifest.files = bundle.manifest.files.filter((file) => file.path !== "settings.json");
   } else {
     const ordered = Object.fromEntries(Object.entries(settings).sort(([a], [b]) => (a < b ? -1 : 1)));
-    bundle.files.set("settings.json", {
-      content: Buffer.from(`${JSON.stringify(ordered, null, 2)}\n`, "utf8"),
-      executable: false,
-    });
+    const content = Buffer.from(`${JSON.stringify(ordered, null, 2)}\n`, "utf8");
+    bundle.files.set("settings.json", { content, executable: false });
+    // The marker records this manifest as what was applied, so the entry must
+    // describe the post-gate bytes, not the source bundle's.
+    for (const file of bundle.manifest.files) {
+      if (file.path === "settings.json") {
+        file.sha256 = createHash("sha256").update(content).digest("hex");
+        file.size = content.length;
+      }
+    }
   }
   return withheld;
 }

@@ -219,6 +219,66 @@ test("credential-shaped and state-dir paths in a manifest are refused", () => {
   }
 });
 
+test("a manifest with ancestor-descendant paths is refused whole", () => {
+  const a = Buffer.from("file at a");
+  const b = Buffer.from("file at a/b");
+  const manifest = {
+    schemaVersion: 1,
+    tool: "agent-sync",
+    agent: "claude-code",
+    files: [
+      { path: "a", sha256: sha256Hex(a), size: a.length },
+      { path: "a/b", sha256: sha256Hex(b), size: b.length },
+    ],
+    mcpServers: [],
+    hooks: [],
+  };
+  const tar = createTar([
+    { path: "manifest.json", content: Buffer.from(JSON.stringify(manifest)) },
+    { path: "files/a", content: a },
+    { path: "files/a/b", content: b },
+  ]);
+  assert.throws(() => loadBundleFromBuffer(tar), /both a file and a parent/);
+});
+
+test("duplicate manifest paths are refused", () => {
+  const a = Buffer.from("payload");
+  const entry = { path: "a.md", sha256: sha256Hex(a), size: a.length };
+  const manifest = { schemaVersion: 1, tool: "agent-sync", agent: "claude-code", files: [entry, { ...entry }], mcpServers: [], hooks: [] };
+  const tar = createTar([
+    { path: "manifest.json", content: Buffer.from(JSON.stringify(manifest)) },
+    { path: "files/a.md", content: a },
+  ]);
+  assert.throws(() => loadBundleFromBuffer(tar), /duplicate manifest path/);
+});
+
+test("dry-run reaches the same verdict as a real apply on a hostile layout", () => {
+  const outside = freshTarget("dry-outside");
+  const target = freshTarget("dry-symlinked");
+  symlinkSync(outside, join(target, "skills"));
+  assert.throws(() => runCli(["apply", bundleTar, "--target", target, "--dry-run"]), /symlink inside the target/);
+  assert.deepEqual(readdirSync(outside), []);
+});
+
+test("a directory sitting where a file must go is a clean whole refusal", () => {
+  const target = freshTarget("dir-in-the-way");
+  mkdirSync(join(target, "CLAUDE.md"));
+  assert.throws(() => runCli(["apply", bundleTar, "--target", target]), /exists as a directory/);
+  assert.ok(!existsSync(join(target, ".agent-sync")), "refusal happened before any write");
+});
+
+test("the marker records the post-gate settings hash, matching disk", () => {
+  const hooked = join(root, "marker-hash.tar");
+  runCli(["export", hooked, "--hook", "hooks.PostToolUse"]);
+  const target = freshTarget("marker-hash");
+  runCli(["apply", hooked, "--target", target]);
+  const marker = JSON.parse(readFileSync(join(target, ".agent-sync", "last-applied.json"), "utf8"));
+  const entry = marker.manifest.files.find((file) => file.path === "settings.json");
+  const disk = readFileSync(join(target, "settings.json"));
+  assert.equal(entry.sha256, sha256Hex(disk));
+  assert.equal(entry.size, disk.length);
+});
+
 test("a newer manifest schema asks for a newer tool instead of guessing", () => {
   const manifest = { schemaVersion: 2, files: [] };
   const tar = createTar([{ path: "manifest.json", content: Buffer.from(JSON.stringify(manifest)) }]);

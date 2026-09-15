@@ -119,6 +119,7 @@ function parseManifest(bytes: Buffer): Manifest {
   }
   if (!Array.isArray(manifest.files)) throw new Error("Refusing bundle: manifest has no files list.");
 
+  const seenPaths = new Set<string>();
   for (const file of manifest.files as unknown[]) {
     if (file === null || typeof file !== "object") throw new Error("Refusing bundle: malformed file entry.");
     const record = file as ManifestFile;
@@ -130,6 +131,20 @@ function parseManifest(bytes: Buffer): Manifest {
     }
     validateArchivePath(record.path, false);
     assertWritablePath(record.path);
+    if (seenPaths.has(record.path)) throw new Error(`Refusing bundle: duplicate manifest path ${record.path}.`);
+    seenPaths.add(record.path);
+  }
+
+  // A path that is an ancestor of another would half-apply: the ancestor lands
+  // as a file, then its descendant fails with the target already modified.
+  for (const path of seenPaths) {
+    const parts = path.split("/");
+    for (let depth = 1; depth < parts.length; depth += 1) {
+      const ancestor = parts.slice(0, depth).join("/");
+      if (seenPaths.has(ancestor)) {
+        throw new Error(`Refusing bundle: ${ancestor} is both a file and a parent of ${path}. Nothing was written.`);
+      }
+    }
   }
 
   return {
