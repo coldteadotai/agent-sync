@@ -142,14 +142,27 @@ function parseManifest(bytes: Buffer): Manifest {
   };
 }
 
+// Structurally excluded on the send side, therefore refused on the receive
+// side too: session state and the file that holds OAuth credentials.
+const RESERVED_ROOT_NAMES = ["projects", "todos", "shell-snapshots", "statsig", "cache", "history.jsonl"];
+
 // The target-path policy for anything a bundle may write: no credential-shaped
-// names anywhere in the path, and never inside agent-sync's own state directory.
+// names anywhere in the path, never inside agent-sync's own state directory,
+// and never the structurally excluded set. All checks are case-folded because
+// targets may sit on case-insensitive filesystems.
 export function assertWritablePath(path: string): void {
   const components = path.split("/");
-  if (components[0] === ".agent-sync") {
+  const root = (components[0] ?? "").toLowerCase();
+  if (root === ".agent-sync") {
     throw new Error(`Refusing bundle: ${path} would write into agent-sync state.`);
   }
+  if (RESERVED_ROOT_NAMES.includes(root)) {
+    throw new Error(`Refusing bundle: ${path} targets structurally excluded state. Nothing was written.`);
+  }
   for (const component of components) {
+    if (/^\.claude\.json$/i.test(component)) {
+      throw new Error(`Refusing bundle: ${path} targets the credential-bearing .claude.json. Nothing was written.`);
+    }
     if (CREDENTIAL_FILE_PATTERNS.some((pattern) => pattern.test(component))) {
       throw new Error(`Refusing bundle: ${path} matches a credential filename pattern. Nothing was written.`);
     }

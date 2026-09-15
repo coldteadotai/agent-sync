@@ -1,6 +1,7 @@
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -65,12 +66,16 @@ export function executeApply(bundle: LoadedBundle, targetDir: string, plan: Appl
   const updated = plan.actions.filter((action) => action.kind === "update").map((action) => action.path);
   if (created.length === 0 && updated.length === 0) return null;
 
+  // Every destination is symlink-checked before the first byte moves, so a
+  // hostile target layout fails the whole apply rather than half of it.
+  for (const path of [...created, ...updated]) resolveForWrite(targetDir, path);
+
   let backupDir: string | null = null;
   if (updated.length > 0) {
     backupDir = join(STATE_DIR, "backups", `${Date.now()}`);
     for (const path of updated) {
       const source = resolveInside(targetDir, path);
-      const backupPath = resolveInside(targetDir, `${backupDir}/${path}`);
+      const backupPath = resolveForWrite(targetDir, `${backupDir}/${path}`);
       mkdirSync(dirname(backupPath), { recursive: true });
       writeFileSync(backupPath, readFileSync(source));
       chmodSync(backupPath, statSync(source).mode & 0o777);
@@ -92,7 +97,7 @@ export function executeApply(bundle: LoadedBundle, targetDir: string, plan: Appl
   for (const path of [...created, ...updated]) {
     const payload = bundle.files.get(path);
     if (payload === undefined) continue;
-    const destination = resolveInside(targetDir, path);
+    const destination = resolveForWrite(targetDir, path);
     mkdirSync(dirname(destination), { recursive: true });
     writeFileSync(destination, payload.content);
     chmodSync(destination, payload.executable ? 0o755 : 0o644);
@@ -122,7 +127,7 @@ export function undoLast(targetDir: string): UndoResult {
   for (const path of marker.updated) {
     if (marker.backupDir === null) continue;
     const backupPath = resolveInside(targetDir, `${marker.backupDir}/${path}`);
-    const destination = resolveInside(targetDir, path);
+    const destination = resolveForWrite(targetDir, path);
     mkdirSync(dirname(destination), { recursive: true });
     writeFileSync(destination, readFileSync(backupPath));
     chmodSync(destination, statSync(backupPath).mode & 0o777);
@@ -130,13 +135,76 @@ export function undoLast(targetDir: string): UndoResult {
   }
 
   for (const path of marker.created) {
-    const destination = resolveInside(targetDir, path);
+    const destination = resolveForWrite(targetDir, path);
     rmSync(destination, { force: true });
     removed.push(path);
   }
 
   rmSync(join(targetDir, STATE_DIR, "last-applied.json"), { force: true });
   return { restored, removed };
+}
+
+// Settled decision 5, receive side: hooks and statusLine are arbitrary shell
+// commands, so the machine that runs them re-confirms each one. Anything not
+// named in confirmedHooks is stripped from the bundle's settings.json.
+export function gateSettingsHooks(bundle: LoadedBundle, confirmedHooks: string[]): string[] {
+  const entry = bundle.files.get("settings.json");
+  if (entry === undefined) {
+    if (confirmedHooks.length > 0) throw new Error("--hook given but the bundle carries no settings.json.");
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(entry.content.toString("utf8"));
+  } catch {
+    throw new Error("Refusing bundle: settings.json is not valid JSON.");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Refusing bundle: settings.json is not an object.");
+  }
+  const settings = parsed as Record<string, unknown>;
+
+  const present = new Set<string>();
+  if ("statusLine" in settings) present.add("settings.statusLine");
+  const hooks = settings.hooks;
+  const hookEvents =
+    hooks !== null && hooks !== undefined && typeof hooks === "object" && !Array.isArray(hooks)
+      ? Object.keys(hooks as Record<string, unknown>)
+      : [];
+  for (const event of hookEvents) present.add(`hooks.${event}`);
+
+  for (const requested of confirmedHooks) {
+    if (!present.has(requested)) throw new Error(`--hook ${requested} does not match anything in this bundle.`);
+  }
+
+  const confirmed = new Set(confirmedHooks);
+  const withheld: string[] = [];
+  if (present.has("settings.statusLine") && !confirmed.has("settings.statusLine")) {
+    delete settings.statusLine;
+    withheld.push("settings.statusLine");
+  }
+  if (hookEvents.length > 0) {
+    const kept: Record<string, unknown> = {};
+    for (const event of hookEvents.sort()) {
+      if (confirmed.has(`hooks.${event}`)) kept[event] = (hooks as Record<string, unknown>)[event];
+      else withheld.push(`hooks.${event}`);
+    }
+    if (Object.keys(kept).length > 0) settings.hooks = kept;
+    else delete settings.hooks;
+  }
+
+  if (withheld.length === 0) return [];
+  if (Object.keys(settings).length === 0) {
+    bundle.files.delete("settings.json");
+  } else {
+    const ordered = Object.fromEntries(Object.entries(settings).sort(([a], [b]) => (a < b ? -1 : 1)));
+    bundle.files.set("settings.json", {
+      content: Buffer.from(`${JSON.stringify(ordered, null, 2)}\n`, "utf8"),
+      executable: false,
+    });
+  }
+  return withheld;
 }
 
 export function readMarker(targetDir: string): Marker | null {
@@ -154,7 +222,7 @@ export function readMarker(targetDir: string): Marker | null {
 }
 
 function writeMarker(targetDir: string, marker: Marker): void {
-  const markerPath = join(targetDir, STATE_DIR, "last-applied.json");
+  const markerPath = resolveForWrite(targetDir, `${STATE_DIR}/last-applied.json`);
   mkdirSync(dirname(markerPath), { recursive: true });
   writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
 }
@@ -166,6 +234,23 @@ export function resolveInside(targetDir: string, path: string): string {
   const destination = resolve(base, ...path.split("/"));
   if (destination !== base && !destination.startsWith(base + sep)) {
     throw new Error(`Refusing to write outside the target directory: ${path}`);
+  }
+  return destination;
+}
+
+// Lexical containment is not enough for writes: a pre-existing symlink at any
+// component inside the target would carry the write outside it. The target
+// directory itself may legitimately be a symlink; anything under it may not be.
+export function resolveForWrite(targetDir: string, path: string): string {
+  const destination = resolveInside(targetDir, path);
+  let current = resolve(targetDir);
+  for (const component of path.split("/")) {
+    current = join(current, component);
+    const stat = lstatSync(current, { throwIfNoEntry: false });
+    if (stat === undefined) break;
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Refusing to write through a symlink inside the target: ${current}`);
+    }
   }
   return destination;
 }

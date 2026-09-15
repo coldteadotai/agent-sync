@@ -12,7 +12,7 @@ export type { Manifest, ExportPlan } from "./export/collect.js";
 export { createTar } from "./export/tar.js";
 export { parseTar, validateArchivePath } from "./apply/untar.js";
 export { loadBundleFromBuffer, loadBundleFromDirectory, assertWritablePath } from "./apply/bundle.js";
-export { planApply, executeApply, undoLast, readMarker, resolveInside } from "./apply/apply.js";
+export { planApply, executeApply, gateSettingsHooks, undoLast, readMarker, resolveInside, resolveForWrite } from "./apply/apply.js";
 
 declare const __PKG_VERSION__: string;
 

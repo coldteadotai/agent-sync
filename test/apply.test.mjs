@@ -8,8 +8,10 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,7 +53,13 @@ before(() => {
   writeFileSync(join(skill, "SKILL.md"), "# reviewer\n");
   writeFileSync(join(skill, "run.sh"), "#!/bin/sh\necho ok\n", { mode: 0o755 });
   writeFileSync(join(sourceDir, "CLAUDE.md"), "memory v1\n");
-  writeFileSync(join(sourceDir, "settings.json"), JSON.stringify({ model: "opus" }));
+  writeFileSync(
+    join(sourceDir, "settings.json"),
+    JSON.stringify({
+      model: "opus",
+      hooks: { PostToolUse: [{ hooks: [{ type: "command", command: "prettier --write" }] }] },
+    }),
+  );
   writeFileSync(join(sourceDir, ".claude.json"), "{}");
 
   bundleTar = join(root, "bundle.tar");
@@ -180,7 +188,20 @@ test("payload files missing from the manifest are refused", () => {
 });
 
 test("credential-shaped and state-dir paths in a manifest are refused", () => {
-  for (const path of ["skills/x/id_rsa", "skills/x/server.key", ".agent-sync/last-applied.json"]) {
+  for (const path of [
+    "skills/x/id_rsa",
+    "skills/x/server.key",
+    ".agent-sync/last-applied.json",
+    ".AGENT-SYNC/last-applied.json",
+    ".CREDENTIALS.JSON",
+    ".ENV",
+    "skills/x/ID_RSA",
+    ".claude.json",
+    "skills/x/.CLAUDE.JSON",
+    "projects/session.jsonl",
+    "PROJECTS/session.jsonl",
+    "history.jsonl",
+  ]) {
     const content = Buffer.from("evil");
     const manifest = {
       schemaVersion: 1,
@@ -212,6 +233,57 @@ test("undo aborts untouched when a backup file is missing", () => {
   rmSync(join(target, marker.backupDir), { recursive: true, force: true });
   assert.throws(() => runCli(["undo", "--target", target]), /undo aborted/);
   assert.equal(readFileSync(join(target, "CLAUDE.md"), "utf8"), "memory v1\n", "target untouched by aborted undo");
+});
+
+test("a symlink directory inside the target cannot carry writes outside", () => {
+  const outside = freshTarget("outside-dir");
+  const target = freshTarget("symlinked-target");
+  symlinkSync(outside, join(target, "skills"));
+  assert.throws(() => runCli(["apply", bundleTar, "--target", target]), /through a symlink inside the target/);
+  assert.deepEqual(readdirSync(outside), [], "nothing may land outside the target");
+});
+
+test("a symlink at the destination file itself is refused", () => {
+  const target = freshTarget("symlinked-file");
+  const outsideFile = join(root, "outside-file.md");
+  writeFileSync(outsideFile, "outside\n");
+  symlinkSync(outsideFile, join(target, "CLAUDE.md"));
+  assert.throws(() => runCli(["apply", bundleTar, "--target", target]), /symlink inside the target/);
+  assert.equal(readFileSync(outsideFile, "utf8"), "outside\n", "linked file untouched");
+});
+
+test("a target that is itself a symlink is allowed", () => {
+  const real = freshTarget("real-target");
+  const link = join(root, "link-target");
+  symlinkSync(real, link);
+  runCli(["apply", bundleTar, "--target", link]);
+  assert.equal(readFileSync(join(real, "CLAUDE.md"), "utf8"), "memory v1\n");
+});
+
+test("hooks in a bundle are withheld unless re-confirmed at apply", () => {
+  const hooked = join(root, "hooked.tar");
+  runCli(["export", hooked, "--hook", "hooks.PostToolUse"]);
+
+  const gated = freshTarget("hooks-gated");
+  const output = runCli(["apply", hooked, "--target", gated]);
+  assert.match(output, /Withheld hooks\.PostToolUse/);
+  const withheldSettings = JSON.parse(readFileSync(join(gated, "settings.json"), "utf8"));
+  assert.equal(withheldSettings.hooks, undefined);
+  assert.equal(withheldSettings.model, "opus");
+
+  const confirmed = freshTarget("hooks-confirmed");
+  runCli(["apply", hooked, "--target", confirmed, "--hook", "hooks.PostToolUse"]);
+  const confirmedSettings = JSON.parse(readFileSync(join(confirmed, "settings.json"), "utf8"));
+  assert.deepEqual(Object.keys(confirmedSettings.hooks), ["PostToolUse"]);
+});
+
+test("an apply --hook that names nothing in the bundle is an error", () => {
+  const target = freshTarget("bad-hook-name");
+  assert.throws(
+    () => runCli(["apply", bundleTar, "--target", target, "--hook", "hooks.DoesNotExist"]),
+    /does not match anything in this bundle/,
+  );
+  assert.ok(!existsSync(join(target, "CLAUDE.md")));
 });
 
 test("mode-only drift counts as an update and gets corrected", () => {

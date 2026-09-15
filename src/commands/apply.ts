@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CommandDef, ExitCode } from "../main.js";
 import { loadBundleFromBuffer, loadBundleFromDirectory, type LoadedBundle } from "../apply/bundle.js";
-import { executeApply, planApply } from "../apply/apply.js";
+import { executeApply, gateSettingsHooks, planApply } from "../apply/apply.js";
 
 const HELP = [
   "Usage: agent-sync apply <bundle> [flags]",
@@ -13,8 +13,12 @@ const HELP = [
   "backed up first so `agent-sync undo` can put it back.",
   "bundle is a directory, a .tar or .tgz file, or - for a tar stream on stdin.",
   "",
+  "Hooks and statusLine in a bundle run shell commands, so they apply only when",
+  "re-confirmed here with --hook, mirroring the confirmation export required.",
+  "",
   "Flags:",
   "  --target <dir>  Directory to apply into (default: ~/.claude, honoring CLAUDE_CONFIG_DIR)",
+  "  --hook <name>   Re-confirm one hook from the bundle (repeatable), e.g. --hook hooks.PostToolUse",
   "  --dry-run       Print what would change and write nothing",
   "  --help          Show help",
 ].join("\n");
@@ -25,6 +29,7 @@ export const applyCommand: CommandDef = {
   help: HELP,
   flags: {
     target: { type: "string", description: "Directory to apply into" },
+    hook: { type: "string", description: "Re-confirm one hook from the bundle (repeatable)", multiple: true },
     "dry-run": { type: "boolean", description: "Print what would change and write nothing" },
   },
   async run({ positionals, values, io }): Promise<ExitCode> {
@@ -38,7 +43,18 @@ export const applyCommand: CommandDef = {
         ? values.target
         : (process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"));
 
+    const hookValues = values.hook;
+    const confirmedHooks = Array.isArray(hookValues)
+      ? hookValues.filter((value): value is string => typeof value === "string")
+      : typeof hookValues === "string"
+        ? [hookValues]
+        : [];
+
     const bundle = await loadBundle(source);
+    const withheld = gateSettingsHooks(bundle, confirmedHooks);
+    for (const name of withheld) {
+      io.out(`Withheld ${name}: hooks run shell commands, so re-confirm with --hook ${name} to apply it.`);
+    }
     const plan = planApply(bundle, targetDir);
 
     const creates = plan.actions.filter((action) => action.kind === "create");
