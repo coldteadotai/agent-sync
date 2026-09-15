@@ -115,6 +115,26 @@ test("stripJsonc leaves strings alone and only strips real comments and trailing
   assert.deepEqual(JSON.parse(stripJsonc(commented)), { a: 1, b: "// not a comment" });
 });
 
+test("when both config filename variants exist, only one is scanned", () => {
+  const bothRoot = mkdtempSync(join(tmpdir(), "agent-sync-opencode-both-"));
+  try {
+    const configDir = join(bothRoot, "opencode");
+    mkdirSync(configDir, { recursive: true });
+    const config = JSON.stringify({
+      model: "anthropic/claude-sonnet-5",
+      mcp: { srv: { type: "remote", url: "https://mcp.srv.example.com/mcp" } },
+    });
+    writeFileSync(join(configDir, "opencode.json"), config);
+    writeFileSync(join(configDir, "opencode.jsonc"), config);
+    const both = scanOpencode({ configDir, dataDir: join(bothRoot, "share"), projectDir: null });
+    assert.equal(both.items.filter((entry) => entry.name === "srv").length, 1);
+    assert.equal(both.items.filter((entry) => entry.kind === "settings").length, 1);
+    assert.match(both.items.find((entry) => entry.kind === "settings").name, /^opencode\.json /);
+  } finally {
+    rmSync(bothRoot, { recursive: true, force: true });
+  }
+});
+
 test("a malformed config warns without leaking content", () => {
   const badRoot = mkdtempSync(join(tmpdir(), "agent-sync-opencode-bad-"));
   try {

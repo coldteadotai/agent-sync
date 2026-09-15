@@ -26,9 +26,10 @@ export function scanOpencode(options: OpencodeScanOptions = {}): ScanReport {
   const excluded: ExcludedPath[] = [];
   const diagnostics: Diagnostic[] = [];
 
-  for (const fileName of ["opencode.json", "opencode.jsonc"]) {
-    scanOpencodeConfig(join(configDir, fileName), "user", items, diagnostics);
-  }
+  // OpenCode loads one config file, so scanning both would double-report;
+  // .json wins when both exist.
+  const userConfig = firstExisting(configDir, ["opencode.json", "opencode.jsonc"]);
+  if (userConfig !== null) scanOpencodeConfig(userConfig, "user", items, diagnostics);
   scanMarkdownDirectory(join(configDir, "commands"), "user", "command", items);
   scanPluginsDirectory(join(configDir, "plugins"), "user", items);
   scanNpmPlugins(join(configDir, "package.json"), "user", items, diagnostics);
@@ -43,12 +44,10 @@ export function scanOpencode(options: OpencodeScanOptions = {}): ScanReport {
 
   let scannedProjectDir: string | null = null;
   if (projectDir !== null) {
-    for (const fileName of ["opencode.json", "opencode.jsonc"]) {
-      const path = join(projectDir, fileName);
-      if (existsSync(path)) {
-        scannedProjectDir = projectDir;
-        scanOpencodeConfig(path, "project", items, diagnostics);
-      }
+    const projectConfig = firstExisting(projectDir, ["opencode.json", "opencode.jsonc"]);
+    if (projectConfig !== null) {
+      scannedProjectDir = projectDir;
+      scanOpencodeConfig(projectConfig, "project", items, diagnostics);
     }
     for (const directory of ["commands", "command"]) {
       if (scanMarkdownDirectory(join(projectDir, ".opencode", directory), "project", "command", items)) {
@@ -76,6 +75,14 @@ export function scanOpencode(options: OpencodeScanOptions = {}): ScanReport {
     excluded,
     diagnostics,
   };
+}
+
+function firstExisting(directory: string, names: string[]): string | null {
+  for (const name of names) {
+    const path = join(directory, name);
+    if (existsSync(path)) return path;
+  }
+  return null;
 }
 
 function scanOpencodeConfig(path: string, scope: Scope, items: ScanItem[], diagnostics: Diagnostic[]): void {
