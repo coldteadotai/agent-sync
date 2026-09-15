@@ -8,19 +8,21 @@ import { PORTABLE_SETTINGS_KEYS, scanClaudeCode } from "../scan/scanner.js";
 import type { Diagnostic, ScanItem } from "../scan/types.js";
 
 export const MANIFEST_SCHEMA_VERSION = 1;
-const MAX_FILE_BYTES = 5 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+export const MAX_FILE_BYTES = 5 * 1024 * 1024;
+export const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
 // Files matching these never enter a bundle, even inside a skill directory.
-const CREDENTIAL_FILE_PATTERNS = [
-  /^\.env(\..*)?$/,
+// Every pattern is case-insensitive: targets may sit on case-insensitive
+// filesystems, where ".ENV" writes over ".env".
+export const CREDENTIAL_FILE_PATTERNS = [
+  /^\.env(\..*)?$/i,
   /\.pem$/i,
   /\.key$/i,
   /\.p12$/i,
   /\.pfx$/i,
   /\.ppk$/i,
   /^id_[a-z0-9_.-]+$/i,
-  /^\.credentials\.json$/,
+  /^\.credentials\.json$/i,
 ];
 
 export interface ManifestFile {

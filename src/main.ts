@@ -1,6 +1,8 @@
 import { parseArgs } from "node:util";
 import { scanCommand } from "./commands/scan.js";
 import { exportCommand } from "./commands/export.js";
+import { applyCommand } from "./commands/apply.js";
+import { undoCommand } from "./commands/undo.js";
 
 export { classifyMcpServer, isSensitiveKey, scanSecretReferences } from "./scan/classify.js";
 export { scanClaudeCode, PORTABLE_SETTINGS_KEYS } from "./scan/scanner.js";
@@ -8,6 +10,9 @@ export type { ScanReport, ScanItem } from "./scan/types.js";
 export { collectExport, MANIFEST_SCHEMA_VERSION } from "./export/collect.js";
 export type { Manifest, ExportPlan } from "./export/collect.js";
 export { createTar } from "./export/tar.js";
+export { parseTar, validateArchivePath } from "./apply/untar.js";
+export { loadBundleFromBuffer, loadBundleFromDirectory, assertWritablePath } from "./apply/bundle.js";
+export { planApply, executeApply, gateSettingsHooks, undoLast, readMarker, resolveInside, resolveForWrite } from "./apply/apply.js";
 
 declare const __PKG_VERSION__: string;
 
@@ -45,7 +50,7 @@ export const GLOBAL_FLAGS: Record<string, FlagDef> = {
   version: { type: "boolean", description: "Show version" },
 };
 
-export const ALL_COMMANDS: CommandDef[] = [scanCommand, exportCommand];
+export const ALL_COMMANDS: CommandDef[] = [scanCommand, exportCommand, applyCommand, undoCommand];
 
 export function usage(): string {
   const lines = ["Usage: agent-sync <command> [flags]", ""];
