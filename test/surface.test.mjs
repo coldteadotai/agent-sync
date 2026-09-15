@@ -12,8 +12,9 @@ function capture() {
 
 test("public surface is frozen", () => {
   assert.deepEqual(Object.keys(GLOBAL_FLAGS).sort(), ["help", "version"]);
-  assert.deepEqual(ALL_COMMANDS.map((command) => command.word), ["scan"]);
+  assert.deepEqual(ALL_COMMANDS.map((command) => command.word), ["scan", "export"]);
   assert.deepEqual(Object.keys(ALL_COMMANDS[0].flags).sort(), ["json", "no-project", "project"]);
+  assert.deepEqual(Object.keys(ALL_COMMANDS[1].flags).sort(), ["dry-run", "hook", "json"]);
 });
 
 test("help wins when combined with version", async () => {
