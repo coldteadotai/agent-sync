@@ -1,5 +1,9 @@
 name: release
 
+# Dormant by choice: releases are currently published manually by the
+# maintainer (no automation token exists). This workflow becomes the release
+# path once npm Trusted Publishing is configured for the package; without
+# that, the publish step fails closed on a pushed tag.
 on:
   push:
     tags: ["v*"]
