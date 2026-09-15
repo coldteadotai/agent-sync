@@ -29,6 +29,12 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
+      - name: source stays diffable text
+        run: |
+          if grep -rIPl '[\x00-\x08\x0B\x0C\x0E-\x1F]' src bin test build.mjs .github; then
+            echo "control bytes found in source files" >&2
+            exit 1
+          fi
       - name: gitleaks
         run: |
           curl -fsSL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.24.2/gitleaks_8.24.2_linux_x64.tar.gz
