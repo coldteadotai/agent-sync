@@ -25,6 +25,8 @@ agent-sync export - | ssh mybox 'agent-sync apply -'
 
 The same binary runs on the remote machine, so the reverse direction works too: run `export` there and `apply` at home.
 
+Bundles are deterministic: the same setup produces byte-identical output. The `.tar` form is the canonical one; `.tgz` adds a gzip header whose OS byte can differ between platforms, so compare `.tar` bytes when you need reproducibility across machines.
+
 ## What never leaves your machine
 
 The scanner will read an explicit allowlist of paths and nothing else. These will be excluded in code, with no flag to include them:
