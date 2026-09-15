@@ -44,16 +44,41 @@ export function sanitizeRemoteEndpoint(raw: string): EndpointCheck {
 function isPrivateHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (host === "localhost" || host.endsWith(".localhost") || host === "") return true;
-  if (host === "::1" || host === "::" || host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) {
-    return true;
-  }
+  // IPv6 rules only apply to actual IPv6 literals; "fd.io" is a DNS name.
+  if (host.includes(":")) return isPrivateIpv6(host);
+  return isPrivateIpv4(host);
+}
+
+function isPrivateIpv4(host: string): boolean {
   const octets = host.split(".").map(Number);
-  if (octets.length === 4 && octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)) {
-    const [a = 0, b = 0] = octets;
-    if (a === 127 || a === 0 || a === 10) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
+  if (octets.length !== 4 || !octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)) {
+    return false;
+  }
+  const [a = 0, b = 0] = octets;
+  if (a === 127 || a === 0 || a === 10) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return a === 192 && b === 168;
+}
+
+function isPrivateIpv6(host: string): boolean {
+  if (host === "::1" || host === "::") return true;
+  if (host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) return true;
+  // IPv4-mapped addresses (::ffff:a.b.c.d, canonicalized by URL to hex groups)
+  // carry an embedded v4 address that must pass the v4 check.
+  const mapped = host.match(/^::ffff:(.+)$/);
+  if (mapped?.[1] !== undefined) {
+    const rest = mapped[1];
+    if (rest.includes(".")) return isPrivateIpv4(rest);
+    const groups = rest.split(":");
+    if (groups.length === 2) {
+      const high = Number.parseInt(groups[0] ?? "", 16);
+      const low = Number.parseInt(groups[1] ?? "", 16);
+      if (Number.isInteger(high) && Number.isInteger(low)) {
+        return isPrivateIpv4(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+      }
+    }
+    return true;
   }
   return false;
 }

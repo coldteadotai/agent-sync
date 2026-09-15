@@ -160,6 +160,28 @@ test("local and private addresses never become re-declarable endpoints", () => {
   assert.equal(sanitizeRemoteEndpoint("http://172.32.0.1/mcp").ok, true, "public range stays allowed");
 });
 
+test("ipv4-mapped ipv6 loopback is refused and ipv6-looking domains are not", () => {
+  for (const url of [
+    "http://[::ffff:127.0.0.1]/mcp",
+    "http://[::ffff:7f00:1]/mcp",
+    "http://[::ffff:10.0.0.1]/mcp",
+    "http://[::ffff:a9fe:a9fe]/mcp",
+  ]) {
+    const check = sanitizeRemoteEndpoint(url);
+    assert.equal(check.ok, false, url);
+    assert.match(check.reason, /local or private/, url);
+  }
+  for (const url of [
+    "https://fd.io/mcp",
+    "https://fcc.gov/mcp",
+    "https://fdroid.example.com/mcp",
+    "https://fe80site.example.com/mcp",
+  ]) {
+    assert.equal(sanitizeRemoteEndpoint(url).ok, true, url);
+  }
+  assert.equal(sanitizeRemoteEndpoint("http://[::ffff:808:808]/mcp").ok, true, "mapped public v4 stays allowed");
+});
+
 test("a crafted candidate manifest entry with a local url refuses registration", () => {
   for (const url of ["http://localhost:9000/mcp", "http://169.254.169.254/latest", "http://10.1.2.3/mcp"]) {
     assert.throws(
