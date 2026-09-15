@@ -91,7 +91,15 @@ export function scanClaudeCode(options: ScanOptions = {}): ScanReport {
     scanMcpConfig(projectMcp, "project", MAX_CONFIG_FILE_BYTES, items, diagnostics);
   }
 
-  return { agent: "claude-code", userDir, projectDir: scannedProjectDir, items, excluded, diagnostics };
+  return {
+    agent: "claude-code",
+    present: existsSync(userDir) || existsSync(claudeJsonPath) || items.length > 0,
+    userDir,
+    projectDir: scannedProjectDir,
+    items,
+    excluded,
+    diagnostics,
+  };
 }
 
 function scanScope(configDir: string, scope: Scope, items: ScanItem[], diagnostics: Diagnostic[]): void {
