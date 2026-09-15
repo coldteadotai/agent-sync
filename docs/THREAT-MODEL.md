@@ -1,0 +1,52 @@
+# Threat model
+
+agent-sync moves the portable part of an AI agent setup between machines. The files it touches sit next to the most sensitive data on a developer's computer: OAuth tokens, API keys, session transcripts. This document says what the tool defends against, how, and where the honest edges are.
+
+## Trust boundaries
+
+Three boundaries shape the design:
+
+1. The source machine is trusted. `scan` and `export` run on your own computer against your own files.
+2. A bundle is untrusted input. By the time `apply` opens one it may have crossed machines, and nothing about its manifest or payload is believed until verified. Every claim the manifest makes is re-derived on the receiving side.
+3. The transport is yours. agent-sync makes no network calls, so a bundle's integrity in transit rides on however you moved it. The manifest is not cryptographically signed in v1; signing is planned. If you need integrity guarantees today, move bundles over a channel you trust and compare `.tar` bytes, which are deterministic.
+
+The target machine's existing directory layout is also treated as hostile, because an attacker who can plant a symlink inside `~/.claude` should not gain anything from your next `apply`.
+
+## What the tool guarantees
+
+Each guarantee names the code that enforces it. All of them are covered by tests that plant secrets or hostile inputs and assert the outcome.
+
+**Reads are allowlisted.** The scanners read a fixed list of paths per agent and nothing else. Credential files, OAuth state, session history and caches are excluded in code, with no flag to include them (`src/scan/scanner.ts`, `src/scan/codex.ts`, `src/scan/opencode.ts`).
+
+**Secret values never reach an output.** Reports and manifests carry names and classifications, not values. Environment references are extracted as variable names only, with strict rules under secret-bearing keys so a `$` inside a literal secret cannot surface a fragment of it (`src/scan/classify.ts`). Parse errors from every parser in the tool carry positions, never file content, because JavaScript and library error messages can embed source excerpts (`src/scan/toml.ts`, `readJsonObject` in `src/scan/scanner.ts`).
+
+**MCP endpoints are only carried when they cannot hold a secret.** A server URL enters a report or bundle only if it is http(s) with no userinfo, no query, no fragment, and does not point at loopback, link-local, or private address space, including IPv4-mapped and IPv4-compatible IPv6 spellings. The same sanitizer runs at export and again at apply, so a crafted manifest cannot register an endpoint the classifier would refuse (`sanitizeRemoteEndpoint` in `src/scan/classify.ts`, `src/apply/mcp.ts`).
+
+**Nothing is written until everything verifies.** `apply` parses archives with a strict reader (regular files and directories only, checksums verified, duplicates and traversal refused), gates on the manifest schema version, verifies every payload against its SHA-256 and size, and refuses payloads the manifest does not list. A bundle that fails any check leaves the target untouched (`src/apply/untar.ts`, `src/apply/bundle.ts`).
+
+**The write policy denies what the read side excludes.** A bundle cannot write credential-shaped filenames, `.claude.json`, session state, or agent-sync's own state directory, with all checks case-folded because targets may sit on case-insensitive filesystems (`assertWritablePath` in `src/apply/bundle.ts`).
+
+**Writes cannot escape the target.** Beyond lexical path containment, every write path is walked component by component and refused if any existing component is a symlink. The target directory itself may be a symlink; nothing under it may be (`resolveForWrite` in `src/apply/apply.ts`).
+
+**Code execution needs consent on both machines.** Hooks and `statusLine` entries are shell commands. They enter a bundle only when named with `--hook` at export, and they apply only when named again with `--hook` at apply. MCP registration is opt-in per server with `--mcp`, goes through the agent's own CLI with name and URL only, and never carries tokens, headers, or environment values.
+
+**Applies are reversible.** What an apply overwrites is backed up first, the record of the apply lands before the first destructive write, and `agent-sync undo` restores it or aborts untouched if the backup is incomplete.
+
+## Known limitations
+
+These are deliberate v1 edges, kept here so they are decisions rather than surprises.
+
+- There is a window between the symlink check and the write. Exploiting it requires racing a local process on your own machine, which is outside the single-user model this CLI assumes. File-descriptor-based writes would close it.
+- The manifest is unsigned, as described under trust boundaries above.
+- Under keys that are not secret-shaped, bare `$WORD` fragments in strings are still extracted as environment-variable names, matching the reference classifier this port follows. A secret smuggled into a field like `args` could surface a fragment of itself as a name. Secrets in such fields are invisible to any key-based model.
+- The strict extraction under secret-shaped keys means a mid-string reference like `"Bearer $GITHUB_TOKEN"` loses its name hint; the braced `${GITHUB_TOKEN}` form keeps it. This is the safe side of the trade.
+- OpenCode `environment` blocks are covered by the strict secret-key rules, so values cannot leak, but variable name hints are not extracted from them.
+- `.tgz` output can differ between platforms by one byte, the gzip header's OS field. `.tar` is the canonical deterministic form.
+
+## Out of scope
+
+agent-sync does not defend against a compromised source machine, and it does not judge the content of what you sync: a skill is data to this tool, and a malicious skill synced faithfully is still malicious on arrival. Review what lives in your setup before carrying it anywhere. Supply-chain trust in the published package itself is addressed with a zero-dependency runtime, pinned CI, and npm provenance attestation.
+
+## Reporting
+
+Security problems go through private vulnerability reporting, described in [SECURITY.md](../SECURITY.md). A report that shows any guarantee above failing is a vulnerability, not a bug.
