@@ -4,6 +4,35 @@ export interface McpClassification {
   status: "candidate" | "needs_secret" | "blocked" | "unsupported";
   reason: string;
   envRefs: string[];
+  url?: string;
+  transport?: "http" | "sse";
+}
+
+export interface EndpointCheck {
+  ok: boolean;
+  url?: string;
+  reason?: string;
+}
+
+// A URL is only re-declarable when it cannot carry a secret: no userinfo, no
+// query, no fragment. Everything else stays name-only in reports and bundles.
+export function sanitizeRemoteEndpoint(raw: string): EndpointCheck {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false, reason: "URL does not parse" };
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return { ok: false, reason: "URL is not http(s)" };
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    return { ok: false, reason: "URL embeds credentials" };
+  }
+  if (parsed.search !== "" || parsed.hash !== "") {
+    return { ok: false, reason: "URL carries query or fragment parameters" };
+  }
+  return { ok: true, url: parsed.toString() };
 }
 
 const SENSITIVE_KEY_NEEDLES = [
@@ -146,11 +175,27 @@ export function classifyMcpServer(value: JsonValue): McpClassification {
   }
 
   if (hasRemoteUrl) {
-    return {
+    const record = value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+    const rawUrl = record !== null && typeof record.url === "string" ? record.url : null;
+    const endpoint = rawUrl === null ? null : sanitizeRemoteEndpoint(rawUrl);
+    if (endpoint !== null && !endpoint.ok && endpoint.reason !== "URL does not parse") {
+      return {
+        status: "needs_secret",
+        reason: `Server ${endpoint.reason ?? "URL is not clean"}; re-add it manually on the target.`,
+        envRefs: secrets.envRefs,
+      };
+    }
+    const transportValue = record === null ? null : (record.type ?? record.transport);
+    const classification: McpClassification = {
       status: "candidate",
       reason: "Remote endpoint with no local-only dependency.",
       envRefs: secrets.envRefs,
     };
+    if (endpoint !== null && endpoint.ok && endpoint.url !== undefined) {
+      classification.url = endpoint.url;
+      classification.transport = transportValue === "sse" ? "sse" : "http";
+    }
+    return classification;
   }
 
   return {

@@ -248,6 +248,10 @@ function scanMcpConfig(
       reason: classification.reason,
     };
     if (classification.envRefs.length > 0) item.envRefs = classification.envRefs;
+    if (classification.url !== undefined) {
+      item.url = classification.url;
+      item.transport = classification.transport ?? "http";
+    }
     items.push(item);
   }
 }

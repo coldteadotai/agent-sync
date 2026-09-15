@@ -37,6 +37,8 @@ export interface ManifestMcpServer {
   status: string;
   reason: string;
   envRefs?: string[];
+  url?: string;
+  transport?: "http" | "sse";
 }
 
 export interface ManifestHook {
@@ -156,6 +158,10 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
 function toManifestServer(item: ScanItem): ManifestMcpServer {
   const server: ManifestMcpServer = { name: item.name, status: item.status, reason: item.reason };
   if (item.envRefs !== undefined && item.envRefs.length > 0) server.envRefs = item.envRefs;
+  if (item.url !== undefined) {
+    server.url = item.url;
+    server.transport = item.transport ?? "http";
+  }
   return server;
 }
 
