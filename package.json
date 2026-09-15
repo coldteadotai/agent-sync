@@ -1,0 +1,37 @@
+{
+  "name": "agent-sync",
+  "version": "0.1.0",
+  "description": "Carry your AI agent setup to any machine. No daemon, no server, no secrets synced.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coldteadotai/agent-sync.git"
+  },
+  "homepage": "https://github.com/coldteadotai/agent-sync#readme",
+  "bugs": "https://github.com/coldteadotai/agent-sync/issues",
+  "type": "module",
+  "bin": {
+    "agent-sync": "bin/agent-sync.mjs"
+  },
+  "files": [
+    "bin",
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test",
+    "prepare": "npm run build && (git config core.hooksPath .githooks || true)"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,10 @@
+#!/bin/sh
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks is not installed, so staged changes were not scanned for secrets." >&2
+  echo "pre-commit: install it with 'brew install gitleaks' (or see github.com/gitleaks/gitleaks)." >&2
+  exit 0
+fi
+if gitleaks git --help >/dev/null 2>&1; then
+  exec gitleaks git --pre-commit --staged --no-banner --redact
+fi
+exec gitleaks protect --staged --no-banner --redact
