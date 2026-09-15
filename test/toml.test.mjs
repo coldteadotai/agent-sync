@@ -55,6 +55,28 @@ test("unsupported constructs are refused loudly, never misparsed", () => {
   }
 });
 
+test("duplicate table headers are an error, not a silent merge", () => {
+  assert.throws(() => parseToml("[a]\nx = 1\n[a]\ny = 2"), /duplicate table header/);
+  assert.throws(
+    () => parseToml('[mcp_servers.foo]\nurl = "https://x.example.com"\n[mcp_servers.foo]\ncommand = "npx"'),
+    /duplicate table header/,
+  );
+  const siblings = parseToml("[a.b]\nx = 1\n[a.c]\ny = 2");
+  assert.deepEqual(siblings, { a: { b: { x: 1 }, c: { y: 2 } } });
+});
+
+test("strings never span physical lines and escape errors carry no content", () => {
+  assert.throws(() => parseToml('k = ["a\n# would be stripped\nZ"]'), /unterminated string/);
+  try {
+    parseToml('k = "a\\qSEKRET"');
+    assert.fail("expected escape error");
+  } catch (error) {
+    assert.match(error.message, /unsupported escape sequence/);
+    assert.ok(!error.message.includes("SEKRET"));
+    assert.ok(!error.message.includes("\\q"));
+  }
+});
+
 test("prototype pollution keys are refused", () => {
   assert.throws(() => parseToml('__proto__ = { polluted = true }'), /refusing key/);
   assert.throws(() => parseToml("[constructor.prototype]\nx = 1"), /refusing key/);
