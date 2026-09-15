@@ -8,11 +8,11 @@ import { PORTABLE_SETTINGS_KEYS, scanClaudeCode } from "../scan/scanner.js";
 import type { Diagnostic, ScanItem } from "../scan/types.js";
 
 export const MANIFEST_SCHEMA_VERSION = 1;
-const MAX_FILE_BYTES = 5 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+export const MAX_FILE_BYTES = 5 * 1024 * 1024;
+export const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
 // Files matching these never enter a bundle, even inside a skill directory.
-const CREDENTIAL_FILE_PATTERNS = [
+export const CREDENTIAL_FILE_PATTERNS = [
   /^\.env(\..*)?$/,
   /\.pem$/i,
   /\.key$/i,
