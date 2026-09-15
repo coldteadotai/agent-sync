@@ -3,7 +3,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isSensitiveKey, type JsonValue } from "../scan/classify.js";
-import { isRepresentablePath } from "./tar.js";
+import { isRepresentableTreePath } from "./tar.js";
 import { PORTABLE_SETTINGS_KEYS, scanClaudeCode } from "../scan/scanner.js";
 import type { Diagnostic, ScanItem } from "../scan/types.js";
 
@@ -84,7 +84,7 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
   let totalBytes = 0;
 
   const addFile = (bundlePath: string, content: Buffer, executable: boolean): void => {
-    if (!isRepresentablePath(`files/${bundlePath}`)) {
+    if (!isRepresentableTreePath(`files/${bundlePath}`)) {
       skipped.push({ path: bundlePath, reason: "path too long for a tar archive" });
       return;
     }

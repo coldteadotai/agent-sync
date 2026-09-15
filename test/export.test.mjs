@@ -2,7 +2,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,7 @@ const PLANTED = {
 };
 
 const LONG_NAME = `long-${"x".repeat(110)}.md`;
+const LONG_DIR = "d".repeat(100);
 
 let root;
 let userDir;
@@ -50,6 +51,9 @@ before(() => {
   writeFileSync(join(skill, "server.key"), PLANTED.tlsKey);
   writeFileSync(join(skill, "run.sh"), "#!/bin/sh\necho ok\n", { mode: 0o755 });
   writeFileSync(join(skill, LONG_NAME), "name too long for ustar\n");
+  const longDir = join(skill, LONG_DIR);
+  mkdirSync(longDir, { recursive: true });
+  writeFileSync(join(longDir, "f.md"), "under a dirname no tar dir entry can carry\n");
   symlinkSync("/etc/hosts", join(skill, "linked"));
 
   mkdirSync(join(userDir, "commands"), { recursive: true });
@@ -108,6 +112,7 @@ test("credential-pattern files, symlinks and unrepresentable paths are skipped w
   assert.deepEqual(skippedPaths, [
     "skills/reviewer/.env",
     "skills/reviewer/cert.pem",
+    `skills/reviewer/${LONG_DIR}/f.md`,
     "skills/reviewer/id_ed25519_sk",
     "skills/reviewer/id_rsa",
     "skills/reviewer/id_rsa.bak",
@@ -117,6 +122,8 @@ test("credential-pattern files, symlinks and unrepresentable paths are skipped w
   ]);
   const longSkip = result.skipped.find((entry) => entry.path.endsWith(LONG_NAME));
   assert.match(longSkip.reason, /too long/);
+  const longDirSkip = result.skipped.find((entry) => entry.path.endsWith(`${LONG_DIR}/f.md`));
+  assert.match(longDirSkip.reason, /too long/);
 });
 
 test("executables keep their bit deterministically, in manifest and directory export", () => {
@@ -197,12 +204,25 @@ test("dry run writes nothing and needs no destination", () => {
   assert.match(output, /hooks\.PostToolUse — left behind/);
 });
 
-test("tar, dir and dry-run all agree on skipping the unrepresentable file", () => {
+test("tar, dir and dry-run all agree on skipping unrepresentable paths", () => {
   const listing = execFileSync("tar", ["-tf", join(root, "a.tar")], { encoding: "utf8" });
   assert.ok(!listing.includes(LONG_NAME));
+  assert.ok(!listing.includes(LONG_DIR));
   const dryRun = runCli(["export", "--dry-run"]).toString("utf8");
-  assert.ok(!dryRun.includes(`Would pack`) || !dryRun.split("Skipped:")[0].includes(LONG_NAME));
-  assert.ok(dryRun.split("Skipped:")[1].includes(LONG_NAME));
+  const [packed, skippedSection] = dryRun.split("Skipped:");
+  assert.ok(!packed.includes(LONG_NAME));
+  assert.ok(!packed.includes(LONG_DIR));
+  assert.ok(skippedSection.includes(LONG_NAME));
+  assert.ok(skippedSection.includes(LONG_DIR));
+});
+
+test("re-export over an existing directory corrects stale modes", () => {
+  const dest = join(root, "re-export-dir");
+  runCli(["export", dest]);
+  const script = join(dest, "files", "skills", "reviewer", "run.sh");
+  chmodSync(script, 0o644);
+  runCli(["export", dest]);
+  assert.equal(statSync(script).mode & 0o777, 0o755);
 });
 
 test("json output carries skipped entries and diagnostics", () => {

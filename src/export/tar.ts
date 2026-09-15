@@ -13,6 +13,17 @@ export function isRepresentablePath(name: string): boolean {
   }
 }
 
+// A file is only packable if its own name AND every ancestor directory entry
+// (which carries a trailing slash in its header) fit the ustar name fields.
+export function isRepresentableTreePath(name: string): boolean {
+  if (!isRepresentablePath(name)) return false;
+  const parts = name.split("/");
+  for (let depth = 1; depth < parts.length; depth += 1) {
+    if (!isRepresentablePath(`${parts.slice(0, depth).join("/")}/`)) return false;
+  }
+  return true;
+}
+
 const BLOCK = 512;
 // Modes are normalized from a single input bit so identical input yields identical bytes.
 const FILE_MODE = 0o644;

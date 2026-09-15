@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
 import type { CommandDef, ExitCode } from "../main.js";
@@ -114,7 +114,9 @@ function writeBundleDirectory(dest: string, plan: ExportPlan, manifestBytes: Buf
   for (const entry of plan.entries) {
     const target = join(dest, "files", ...entry.path.split("/"));
     mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, entry.content, { mode: entry.executable ? 0o755 : 0o644 });
+    writeFileSync(target, entry.content);
+    // writeFileSync's mode applies only on creation; re-exports must correct it.
+    chmodSync(target, entry.executable ? 0o755 : 0o644);
   }
 }
 
