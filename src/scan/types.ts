@@ -26,7 +26,8 @@ export interface Diagnostic {
 }
 
 export interface ScanReport {
-  agent: "claude-code";
+  agent: "claude-code" | "codex";
+  present: boolean;
   userDir: string;
   projectDir: string | null;
   items: ScanItem[];

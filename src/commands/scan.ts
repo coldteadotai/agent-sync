@@ -1,6 +1,12 @@
 import type { CommandDef, ExitCode } from "../main.js";
 import { scanClaudeCode } from "../scan/scanner.js";
+import { scanCodex } from "../scan/codex.js";
 import type { ScanItem, ScanReport } from "../scan/types.js";
+
+const AGENT_TITLES: Record<ScanReport["agent"], string> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+};
 
 const HELP = [
   "Usage: agent-sync scan [flags]",
@@ -41,20 +47,28 @@ export const scanCommand: CommandDef = {
       : typeof values.project === "string"
         ? values.project
         : undefined;
-    const report = scanClaudeCode(projectDir === undefined ? {} : { projectDir });
+    const reports = [
+      scanClaudeCode(projectDir === undefined ? {} : { projectDir }),
+      scanCodex(projectDir === undefined ? {} : { projectDir }),
+    ];
 
     if (values.json) {
-      io.out(JSON.stringify(report, null, 2));
+      io.out(JSON.stringify({ agents: reports }, null, 2));
     } else {
-      io.out(renderReport(report));
+      const sections = reports
+        .filter((report) => report.agent === "claude-code" || report.present)
+        .map((report) => renderReport(report));
+      io.out(sections.join("\n\n"));
     }
-    return report.diagnostics.some((diagnostic) => diagnostic.severity === "error") ? 2 : 0;
+    return reports.some((report) => report.diagnostics.some((diagnostic) => diagnostic.severity === "error"))
+      ? 2
+      : 0;
   },
 };
 
 function renderReport(report: ScanReport): string {
   const lines: string[] = [];
-  lines.push(`Claude Code setup — user scope: ${report.userDir}`);
+  lines.push(`${AGENT_TITLES[report.agent]} setup — user scope: ${report.userDir}`);
   if (report.projectDir !== null) lines.push(`Project scope: ${report.projectDir}`);
   lines.push("");
 
