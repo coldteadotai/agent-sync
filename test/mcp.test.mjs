@@ -140,6 +140,78 @@ test("unregistered portable servers are named as a hint", () => {
   assert.match(output, /pass --mcp <name> to register: events, linear/);
 });
 
+test("local and private addresses never become re-declarable endpoints", () => {
+  for (const url of [
+    "http://localhost:9000/mcp",
+    "http://127.0.0.1:9000/mcp",
+    "http://[::1]:9000/mcp",
+    "http://169.254.169.254/latest/meta-data",
+    "http://10.0.0.5/mcp",
+    "http://192.168.1.10/mcp",
+    "http://172.16.0.1/mcp",
+    "http://172.31.255.255/mcp",
+    "http://[fe80::1]/mcp",
+    "http://[fd12:3456::1]/mcp",
+  ]) {
+    const check = sanitizeRemoteEndpoint(url);
+    assert.equal(check.ok, false, url);
+    assert.match(check.reason, /local or private/, url);
+  }
+  assert.equal(sanitizeRemoteEndpoint("http://172.32.0.1/mcp").ok, true, "public range stays allowed");
+});
+
+test("a crafted candidate manifest entry with a local url refuses registration", () => {
+  for (const url of ["http://localhost:9000/mcp", "http://169.254.169.254/latest", "http://10.1.2.3/mcp"]) {
+    assert.throws(
+      () =>
+        planMcpRegistrations([{ name: "srv", status: "candidate", reason: "r", url }], ["srv"]),
+      /local or private/,
+      url,
+    );
+  }
+});
+
+test("a clean url pointing at private space classifies without carrying the url", () => {
+  const metadata = classifyMcpServer({ type: "http", url: "http://169.254.169.254/latest" });
+  assert.equal(metadata.url, undefined);
+  assert.equal(metadata.status, "needs_secret");
+  const lan = classifyMcpServer({ type: "http", url: "http://192.168.1.50/mcp" });
+  assert.equal(lan.url, undefined);
+});
+
+test("one failed registration does not stop the rest and exits 2", () => {
+  const failShimDir = join(root, "fail-shim-bin");
+  mkdirSync(failShimDir, { recursive: true });
+  writeFileSync(
+    join(failShimDir, "claude"),
+    `#!/bin/sh\ncase "$@" in *events*) echo "boom: events unreachable" >&2; exit 1;; *) echo "$@" >> "$CLAUDE_SHIM_LOG";; esac\n`,
+    { mode: 0o755 },
+  );
+  const failLog = join(root, "fail-shim.log");
+  const target = join(root, "target-partial-fail");
+  mkdirSync(target, { recursive: true });
+  try {
+    execFileSync(
+      process.execPath,
+      [BIN, "apply", bundleTar, "--target", target, "--mcp", "events", "--mcp", "linear"],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        env: { ...process.env, CLAUDE_CONFIG_DIR: sourceDir, PATH: `${failShimDir}:${process.env.PATH}`, CLAUDE_SHIM_LOG: failLog },
+      },
+    );
+    assert.fail("expected exit 2");
+  } catch (error) {
+    assert.equal(error.status, 2);
+    const stderr = error.stderr.toString("utf8");
+    assert.match(stderr, /events.*failed|failed.*events/s);
+    assert.match(stderr, /1 MCP registration\(s\) failed; files were applied/);
+    const stdout = error.stdout.toString("utf8");
+    assert.match(stdout, /Registered MCP server linear/);
+    assert.match(readFileSync(failLog, "utf8"), /linear/);
+  }
+});
+
 test("sanitizeRemoteEndpoint accepts plain endpoints and normalizes nothing away", () => {
   assert.deepEqual(sanitizeRemoteEndpoint("https://x.example.com/mcp"), {
     ok: true,

@@ -96,12 +96,18 @@ export const applyCommand: CommandDef = {
       }
     }
 
+    let failedRegistrations = 0;
     for (const registration of registrations) {
       if (dryRun) {
         io.out(`Would register MCP server ${registration.name}: claude ${registration.args.join(" ")}`);
-      } else {
+        continue;
+      }
+      try {
         runMcpRegistration(registration);
         io.out(`Registered MCP server ${registration.name} (user scope). \`agent-sync undo\` does not remove it; use \`claude mcp remove ${registration.name}\`.`);
+      } catch (error) {
+        failedRegistrations += 1;
+        io.err(`apply: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
@@ -112,6 +118,10 @@ export const applyCommand: CommandDef = {
       io.out(
         `Bundle records ${unregistered.length} portable MCP server(s) not registered; pass --mcp <name> to register: ${unregistered.map((server) => server.name).join(", ")}`,
       );
+    }
+    if (failedRegistrations > 0) {
+      io.err(`apply: ${failedRegistrations} MCP registration(s) failed; files were applied and stay applied.`);
+      return 2;
     }
     return 0;
   },
