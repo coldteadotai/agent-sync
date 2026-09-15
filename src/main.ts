@@ -1,4 +1,9 @@
 import { parseArgs } from "node:util";
+import { scanCommand } from "./commands/scan.js";
+
+export { classifyMcpServer, isSensitiveKey, scanSecretReferences } from "./scan/classify.js";
+export { scanClaudeCode, PORTABLE_SETTINGS_KEYS } from "./scan/scanner.js";
+export type { ScanReport, ScanItem } from "./scan/types.js";
 
 declare const __PKG_VERSION__: string;
 
@@ -33,7 +38,7 @@ export const GLOBAL_FLAGS: Record<string, FlagDef> = {
   version: { type: "boolean", description: "Show version" },
 };
 
-export const ALL_COMMANDS: CommandDef[] = [];
+export const ALL_COMMANDS: CommandDef[] = [scanCommand];
 
 export function usage(): string {
   const lines = ["Usage: agent-sync <command> [flags]", ""];
