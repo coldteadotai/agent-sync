@@ -83,7 +83,7 @@ function scanConfigToml(path: string, scope: Scope, items: ScanItem[], diagnosti
     // Enforced locally, not just via the parser's own discipline: only a
     // message matching the parser's fixed shape is passed through.
     const detail =
-      error instanceof Error && /^toml line \d+: [A-Za-z .,()-]+\.$/.test(error.message)
+      error instanceof Error && /^toml line \d+: [A-Za-z .,()=-]+\.$/.test(error.message)
         ? error.message
         : "invalid TOML";
     diagnostics.push({ severity: "warning", message: `Could not parse ${path}: ${detail}` });
