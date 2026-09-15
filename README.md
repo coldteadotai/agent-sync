@@ -29,13 +29,13 @@ Bundles are deterministic: the same setup produces byte-identical output. The `.
 
 ## What never leaves your machine
 
-The scanner will read an explicit allowlist of paths and nothing else. These will be excluded in code, with no flag to include them:
+The scanner reads an explicit allowlist of paths and nothing else. These are excluded in code, with no flag to include them:
 
 - `~/.claude.json` (OAuth state, MCP credentials, per-project history)
-- `~/.claude/.credentials.json`
-- session transcripts, caches and anything matching credential filename patterns (`.env`, `*.pem`, `id_*`)
+- `~/.claude/.credentials.json`, Codex `auth.json`, OpenCode `auth.json`
+- session transcripts, caches and anything matching credential filename patterns (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.ppk`, `id_*`)
 
-MCP server entries will be recorded as a name plus a portability class. Secret values are never copied; a server that needs one gets flagged so you can re-enter it on the target. Hooks are shell commands, so each one will be confirmed individually before it is included.
+MCP server entries are recorded as a name plus a portability class. Secret values are never copied; a server that needs one gets flagged so you can re-enter it on the target. Hooks are shell commands, so each one is confirmed individually before it is included, and confirmed again on the machine that applies it.
 
 ## No telemetry
 
