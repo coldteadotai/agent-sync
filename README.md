@@ -8,14 +8,14 @@ agent-sync packs the portable part of your setup into a bundle you can read befo
 
 ## Status
 
-Early development. Nothing is on npm yet. The first release ships four commands:
+Implemented and tested; first npm release pending. Four commands:
 
 | Command | What it does |
 | --- | --- |
 | `scan` | Inventory your local setup and classify every item: portable, needs a secret, or excluded. Reads only; nothing leaves the machine. |
-| `export` | Write a manifest plus file bundle to a directory, tarball or stdout. `--dry-run` prints the exact file list and stops. |
-| `apply` | Unpack a bundle on the target machine. Verifies every file against its manifest hash, backs up what it overwrites, and names anything new since the last apply. |
-| `undo` | Restore the backup the last `apply` saved. |
+| `export` | Write a manifest plus file bundle to a directory, tarball or stdout. `--dry-run` prints the exact file list and stops. Hooks are included only when you name each one with `--hook`. |
+| `apply` | Unpack a bundle on the target machine. Verifies every file against its manifest hash before writing anything, refuses hostile bundles whole, backs up what it overwrites, and names anything new since the last apply. Hooks need re-confirming with `--hook`; portable MCP servers register only when named with `--mcp`, through the agent's own CLI. |
+| `undo` | Restore the backup the last `apply` saved and remove what it created. |
 
 Transport is yours. A bundle is a plain file, so `scp` it, pipe it over ssh, or upload it through whatever your remote environment provides:
 
@@ -29,13 +29,13 @@ Bundles are deterministic: the same setup produces byte-identical output. The `.
 
 ## What never leaves your machine
 
-The scanner will read an explicit allowlist of paths and nothing else. These will be excluded in code, with no flag to include them:
+The scanner reads an explicit allowlist of paths and nothing else. These are excluded in code, with no flag to include them:
 
 - `~/.claude.json` (OAuth state, MCP credentials, per-project history)
-- `~/.claude/.credentials.json`
-- session transcripts, caches and anything matching credential filename patterns (`.env`, `*.pem`, `id_*`)
+- `~/.claude/.credentials.json`, Codex `auth.json`, OpenCode `auth.json`
+- session transcripts, caches and anything matching credential filename patterns (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.ppk`, `id_*`)
 
-MCP server entries will be recorded as a name plus a portability class. Secret values are never copied; a server that needs one gets flagged so you can re-enter it on the target. Hooks are shell commands, so each one will be confirmed individually before it is included.
+MCP server entries are recorded as a name plus a portability class. Secret values are never copied; a server that needs one gets flagged so you can re-enter it on the target. Hooks are shell commands, so each one is confirmed individually before it is included, and confirmed again on the machine that applies it.
 
 ## No telemetry
 
@@ -43,7 +43,9 @@ agent-sync makes no network calls. `export` writes a local file and `apply` read
 
 ## Supported agents
 
-Claude Code first. Codex and OpenCode scanners are planned for the first release; see the issue tracker for progress.
+`scan` covers Claude Code, Codex, and OpenCode. `export`/`apply` sync Claude Code setups today; Codex and OpenCode sync is next, since their files span more than one directory root and deserve their own careful mapping.
+
+The full security design, including what the tool guarantees, the code that enforces each guarantee, and the known limitations, is in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 
 ## License
 

@@ -80,11 +80,13 @@ function scanConfigToml(path: string, scope: Scope, items: ScanItem[], diagnosti
     }
     config = parseToml(readFileSync(path, "utf8"));
   } catch (error) {
-    // Parser errors carry line positions only, never file content.
-    diagnostics.push({
-      severity: "warning",
-      message: `Could not parse ${path}: ${error instanceof Error ? error.message : "invalid TOML"}`,
-    });
+    // Enforced locally, not just via the parser's own discipline: only a
+    // message matching the parser's fixed shape is passed through.
+    const detail =
+      error instanceof Error && /^toml line \d+: [A-Za-z .,()=-]+\.$/.test(error.message)
+        ? error.message
+        : "invalid TOML";
+    diagnostics.push({ severity: "warning", message: `Could not parse ${path}: ${detail}` });
     return;
   }
 
