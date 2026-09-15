@@ -11,6 +11,8 @@ const PLANTED = {
   mcpHeader: "Bearer planted-header-value",
   mcpEnv: "planted-env-value",
   credential: "planted-credential-value",
+  history: "planted-history-value",
+  dollarSecret: "abc$PlantedDollarTail",
 };
 
 let root;
@@ -60,12 +62,26 @@ before(() => {
         },
         localtool: { command: "node", args: ["./tool/index.js"] },
         devproxy: { url: "http://127.0.0.1:9000/mcp" },
+        dollar: {
+          url: "https://mcp.dollar.example.com/mcp",
+          headers: { Authorization: PLANTED.dollarSecret },
+        },
+      },
+      projects: {
+        "/Users/someone/work": {
+          history: [{ display: PLANTED.history }],
+          mcpServers: {
+            nestedremote: { type: "http", url: "https://mcp.nested.example.com/mcp" },
+            nestedlocal: { command: "python3", args: ["serve.py"] },
+          },
+        },
       },
     }),
   );
 
   mkdirSync(join(projectDir, ".claude", "skills", "deploy"), { recursive: true });
   writeFileSync(join(projectDir, ".claude", "skills", "deploy", "SKILL.md"), "# deploy\n");
+  writeFileSync(join(projectDir, "CLAUDE.md"), "project memory\n");
   writeFileSync(join(projectDir, ".claude", "settings.local.json"), JSON.stringify({ model: "haiku" }));
   writeFileSync(
     join(projectDir, ".mcp.json"),
@@ -129,6 +145,54 @@ test("mcp servers are classified without values", () => {
   assert.deepEqual(corp.envRefs, ["CORP_TOKEN"]);
   assert.equal(item("localtool").status, "blocked");
   assert.equal(item("devproxy").status, "blocked");
+});
+
+test("local-scope servers nested under projects are found", () => {
+  assert.equal(item("nestedremote").status, "candidate");
+  assert.equal(item("nestedlocal").status, "blocked");
+});
+
+test("a dollar sign inside a secret value never emits a fragment env ref", () => {
+  const dollar = item("dollar");
+  assert.equal(dollar.status, "needs_secret");
+  assert.equal(dollar.envRefs, undefined);
+});
+
+test("project memory is read from the repo root", () => {
+  assert.equal(item("CLAUDE.md", "project").kind, "memory");
+});
+
+test("a missing --project path warns instead of reporting silently clean", () => {
+  const missing = scanClaudeCode({
+    userDir: join(root, ".claude"),
+    projectDir: join(root, "does-not-exist"),
+    claudeJsonPath: join(root, ".claude.json"),
+  });
+  assert.ok(
+    missing.diagnostics.some(
+      (d) => d.severity === "warning" && d.message.includes("does-not-exist"),
+    ),
+  );
+});
+
+test("CLAUDE_CONFIG_DIR moves both the config dir and .claude.json", () => {
+  const altRoot = mkdtempSync(join(tmpdir(), "agent-sync-configdir-"));
+  const previous = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    mkdirSync(join(altRoot, "confdir"), { recursive: true });
+    writeFileSync(
+      join(altRoot, "confdir", ".claude.json"),
+      JSON.stringify({ mcpServers: { moved: { type: "http", url: "https://mcp.moved.example.com" } } }),
+    );
+    process.env.CLAUDE_CONFIG_DIR = join(altRoot, "confdir");
+    const moved = scanClaudeCode({ projectDir: null });
+    assert.equal(moved.userDir, join(altRoot, "confdir"));
+    assert.ok(moved.items.some((entry) => entry.name === "moved"));
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previous;
+    rmSync(altRoot, { recursive: true, force: true });
+  }
 });
 
 test("project scope picks up skills and shared mcp config", () => {

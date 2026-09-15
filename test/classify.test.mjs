@@ -57,6 +57,24 @@ test("env ref parsing handles both dollar forms and rejects invalid names", () =
   assert.deepEqual(scan.envRefs, ["ONE", "TWO"]);
 });
 
+test("a bare dollar fragment under a sensitive key never becomes an env ref", () => {
+  const classification = classifyMcpServer({
+    url: "https://x.example.com",
+    headers: { Authorization: "Bearer abc$FragmentOfSecret" },
+    env: { REAL_NAME: "p4ss$Word123" },
+  });
+  assert.equal(classification.status, "needs_secret");
+  assert.deepEqual(classification.envRefs, ["REAL_NAME"]);
+});
+
+test("whole-string bare refs and braced refs still work under sensitive keys", () => {
+  const classification = classifyMcpServer({
+    url: "https://x.example.com",
+    env: { FORWARDED: "$REAL_ENV_NAME", TEMPLATED: "prefix-${OTHER_NAME}-suffix" },
+  });
+  assert.deepEqual(classification.envRefs, ["FORWARDED", "OTHER_NAME", "REAL_ENV_NAME", "TEMPLATED"]);
+});
+
 test("sensitive key detection is substring and case-insensitive", () => {
   assert.ok(isSensitiveKey("GitHub_Token"));
   assert.ok(isSensitiveKey("apiKey"));

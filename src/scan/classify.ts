@@ -50,7 +50,10 @@ function walkForSecrets(value: JsonValue, key: string | null, scan: SecretScan):
   }
   if (value !== null && typeof value === "object") {
     for (const [childKey, childValue] of Object.entries(value)) {
-      if (childKey === "env") collectEnvObjectRefs(childValue, scan);
+      if (childKey === "env") {
+        collectEnvObjectRefs(childValue, scan);
+        continue;
+      }
       if (isSensitiveKey(childKey)) {
         scan.hasSecretReference = true;
         collectEnvRefsDeep(childValue, scan);
@@ -77,7 +80,7 @@ function collectEnvObjectRefs(value: JsonValue, scan: SecretScan): void {
 
 function collectEnvRefsDeep(value: JsonValue, scan: SecretScan): void {
   if (typeof value === "string") {
-    collectEnvRefsFromString(value, scan);
+    collectEnvRefsFromStringStrict(value, scan);
     return;
   }
   if (Array.isArray(value)) {
@@ -94,6 +97,24 @@ function collectEnvRefsFromString(text: string, scan: SecretScan): void {
     const name = match[1] ?? match[2];
     if (name !== undefined) {
       scan.envRefs.add(name);
+      scan.hasSecretReference = true;
+    }
+  }
+}
+
+// Strings under sensitive keys and env values are often literal secrets; a `$`
+// inside one would emit a fragment of the secret as a "name". Accept only the
+// braced form there, or a bare ref that is the entire string.
+function collectEnvRefsFromStringStrict(text: string, scan: SecretScan): void {
+  const whole = text.trim().match(/^\$([A-Za-z_][A-Za-z0-9_]*)$/);
+  if (whole?.[1] !== undefined) {
+    scan.envRefs.add(whole[1]);
+    scan.hasSecretReference = true;
+    return;
+  }
+  for (const match of text.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) {
+    if (match[1] !== undefined) {
+      scan.envRefs.add(match[1]);
       scan.hasSecretReference = true;
     }
   }

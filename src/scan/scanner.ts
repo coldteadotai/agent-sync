@@ -36,15 +36,22 @@ export interface ScanOptions {
 }
 
 export function scanClaudeCode(options: ScanOptions = {}): ScanReport {
-  const userDir = options.userDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+  const configDirOverride = process.env.CLAUDE_CONFIG_DIR;
+  const userDir = options.userDir ?? configDirOverride ?? join(homedir(), ".claude");
   const projectDir = options.projectDir === undefined ? process.cwd() : options.projectDir;
-  const claudeJsonPath = options.claudeJsonPath ?? join(homedir(), ".claude.json");
+  // With CLAUDE_CONFIG_DIR set, Claude Code keeps .claude.json inside that directory.
+  const claudeJsonPath =
+    options.claudeJsonPath ??
+    (configDirOverride !== undefined
+      ? join(configDirOverride, ".claude.json")
+      : join(homedir(), ".claude.json"));
 
   const items: ScanItem[] = [];
   const excluded: ExcludedPath[] = [];
   const diagnostics: Diagnostic[] = [];
 
   scanScope(userDir, "user", items, diagnostics);
+  addMemory(join(userDir, "CLAUDE.md"), "user", items);
   for (const exclusion of USER_EXCLUSIONS) {
     const path = join(userDir, exclusion.segment);
     if (existsSync(path)) excluded.push({ path, reason: exclusion.reason });
@@ -55,10 +62,18 @@ export function scanClaudeCode(options: ScanOptions = {}): ScanReport {
       path: claudeJsonPath,
       reason: "Holds OAuth state, credentials and history; MCP entries below are read from it as names only.",
     });
-    scanMcpConfig(claudeJsonPath, "user", MAX_CLAUDE_JSON_BYTES, items, diagnostics);
+    scanMcpConfig(claudeJsonPath, "user", MAX_CLAUDE_JSON_BYTES, items, diagnostics, {
+      includeProjectNested: true,
+    });
   }
 
   let scannedProjectDir: string | null = null;
+  if (projectDir !== null && !existsSync(projectDir)) {
+    diagnostics.push({
+      severity: "warning",
+      message: `Project directory ${projectDir} does not exist; project scope was not scanned.`,
+    });
+  }
   if (projectDir !== null && existsSync(join(projectDir, ".claude"))) {
     scannedProjectDir = projectDir;
     scanScope(join(projectDir, ".claude"), "project", items, diagnostics);
@@ -66,6 +81,9 @@ export function scanClaudeCode(options: ScanOptions = {}): ScanReport {
     if (existsSync(localSettings)) {
       excluded.push({ path: localSettings, reason: "Machine-local overrides never sync." });
     }
+  }
+  if (projectDir !== null && addMemory(join(projectDir, "CLAUDE.md"), "project", items)) {
+    scannedProjectDir = projectDir;
   }
   const projectMcp = projectDir === null ? null : join(projectDir, ".mcp.json");
   if (projectMcp !== null && existsSync(projectMcp)) {
@@ -81,18 +99,19 @@ function scanScope(configDir: string, scope: Scope, items: ScanItem[], diagnosti
   scanEntryDirectory(join(configDir, "agents"), scope, "subagent", items, diagnostics);
   scanEntryDirectory(join(configDir, "commands"), scope, "command", items, diagnostics);
 
-  const memory = join(configDir, "CLAUDE.md");
-  if (existsSync(memory)) {
-    items.push({
-      name: "CLAUDE.md",
-      kind: "memory",
-      scope,
-      status: "candidate",
-      reason: "Memory file is portable.",
-    });
-  }
-
   scanSettingsFile(join(configDir, "settings.json"), scope, items, diagnostics);
+}
+
+function addMemory(path: string, scope: Scope, items: ScanItem[]): boolean {
+  if (!existsSync(path)) return false;
+  items.push({
+    name: "CLAUDE.md",
+    kind: "memory",
+    scope,
+    status: "candidate",
+    reason: "Memory file is portable.",
+  });
+  return true;
 }
 
 function scanEntryDirectory(
@@ -197,16 +216,29 @@ function scanMcpConfig(
   maxBytes: number,
   items: ScanItem[],
   diagnostics: Diagnostic[],
+  options: { includeProjectNested: boolean } = { includeProjectNested: false },
 ): void {
   const config = readJsonObject(path, maxBytes, diagnostics);
   if (config === null) return;
 
-  const servers = config.mcpServers ?? config.mcp_servers;
-  if (servers === null || servers === undefined || typeof servers !== "object" || Array.isArray(servers)) {
-    return;
+  const servers = new Map<string, JsonValue>();
+  collectServers(config.mcpServers ?? config.mcp_servers, servers);
+
+  // `claude mcp add` defaults to local scope, which nests servers under
+  // projects["<dir>"].mcpServers inside ~/.claude.json.
+  if (options.includeProjectNested) {
+    const projects = asObject(config.projects);
+    if (projects !== null) {
+      for (const key of Object.keys(projects).sort()) {
+        const projectEntry = asObject(projects[key] ?? null);
+        if (projectEntry !== null) {
+          collectServers(projectEntry.mcpServers ?? projectEntry.mcp_servers, servers);
+        }
+      }
+    }
   }
 
-  for (const [name, server] of Object.entries(servers).sort(([a], [b]) => a.localeCompare(b))) {
+  for (const [name, server] of [...servers.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     const classification = classifyMcpServer(server);
     const item: ScanItem = {
       name,
@@ -218,6 +250,19 @@ function scanMcpConfig(
     if (classification.envRefs.length > 0) item.envRefs = classification.envRefs;
     items.push(item);
   }
+}
+
+function collectServers(value: JsonValue | undefined, servers: Map<string, JsonValue>): void {
+  const record = value === undefined ? null : asObject(value);
+  if (record === null) return;
+  for (const [name, server] of Object.entries(record)) {
+    if (!servers.has(name)) servers.set(name, server);
+  }
+}
+
+function asObject(value: JsonValue | null | undefined): { [key: string]: JsonValue } | null {
+  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) return null;
+  return value;
 }
 
 function readJsonObject(
