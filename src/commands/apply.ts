@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CommandDef, ExitCode } from "../main.js";
 import { loadBundleFromBuffer, loadBundleFromDirectory, type LoadedBundle } from "../apply/bundle.js";
-import { executeApply, gateSettingsHooks, gateSettingsPlugins, planApply } from "../apply/apply.js";
+import { assertPortableSettings, executeApply, gateSettingsHooks, gateSettingsPlugins, planApply } from "../apply/apply.js";
 import { planMcpRegistrations, runMcpRegistration } from "../apply/mcp.js";
 import { stringList } from "./export.js";
 
@@ -55,6 +55,9 @@ export const applyCommand: CommandDef = {
     const requestedMcp = stringList(values.mcp);
 
     const bundle = await loadBundle(source);
+    // The allowlist runs before either consent gate: an unknown settings key
+    // refuses the whole bundle before any withheld/kept decision is made.
+    assertPortableSettings(bundle);
     const withheld = gateSettingsHooks(bundle, confirmedHooks);
     for (const name of withheld) {
       io.out(`Withheld ${name}: hooks run shell commands, so re-confirm with --hook ${name} to apply it.`);

@@ -214,8 +214,12 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
     }
 
     const totalBytes = plan.entries.reduce((sum, entry) => sum + entry.content.length, 0);
+    // The review is everything that leaves the machine, so consented hooks and
+    // plugins are named here, not just counted into the file total.
     const review = [
       `Would pack ${plan.entries.length} files (${formatBytes(totalBytes)}) + manifest.json`,
+      ...hooks.map((name) => `hook confirmed: ${name}`),
+      ...plugins.map((name) => `plugin reference: ${name}`),
       ...plan.skipped.map((skip) => `skipped: ${skip.path} — ${skip.reason}`),
     ];
     ui.note(review);
@@ -295,8 +299,10 @@ function pickerUi(overrides: GuidedOverrides): GuidedUi {
       return result.cancelled ? null : result.value;
     },
     outro(...lines) {
-      if (lines.length > 1) flow.note(lines.slice(1));
-      flow.outro(lines[0] ?? "");
+      // Lines print in order; the last one lands on the rail end, so the
+      // flag-echo teaching line closes the transcript.
+      if (lines.length > 1) flow.note(lines.slice(0, -1));
+      flow.outro(lines[lines.length - 1] ?? "");
       open = false;
     },
     close() {

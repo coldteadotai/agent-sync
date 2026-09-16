@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import type { Manifest } from "../export/collect.js";
+import { PORTABLE_SETTINGS_KEYS } from "../scan/scanner.js";
 import type { LoadedBundle } from "./bundle.js";
 
 const STATE_DIR = ".agent-sync";
@@ -150,6 +151,67 @@ export function undoLast(targetDir: string): UndoResult {
   return { restored, removed };
 }
 
+// The receive-side settings allowlist: exactly the keys buildPortableSettings
+// can produce, nothing else. A bundle is untrusted input and the gates below
+// are consent filters over KNOWN keys — without this check they fail open on
+// unknown ones, and settings.json carries several that execute code on the
+// target (apiKeyHelper, env, awsAuthRefresh, ...). An unknown key refuses the
+// bundle whole rather than being silently stripped: hostile input should fail
+// loudly, matching how a hash mismatch is handled.
+const RECEIVABLE_SETTINGS_KEYS = new Set<string>([
+  ...PORTABLE_SETTINGS_KEYS,
+  "statusLine",
+  "hooks",
+  "enabledPlugins",
+  "extraKnownMarketplaces",
+]);
+
+export function assertPortableSettings(bundle: LoadedBundle): void {
+  const entry = bundle.files.get("settings.json");
+  if (entry === undefined) return;
+  const settings = readBundleSettings(entry.content);
+  for (const key of Object.keys(settings)) {
+    if (!RECEIVABLE_SETTINGS_KEYS.has(key)) {
+      throw new Error(
+        `Refusing bundle: settings.json carries "${key}", which agent-sync never exports. Nothing was written.`,
+      );
+    }
+  }
+  for (const key of ["hooks", "enabledPlugins", "extraKnownMarketplaces"] as const) {
+    if (key in settings && plainObject(settings[key]) === null) {
+      throw new Error(`Refusing bundle: settings.json "${key}" is not an object. Nothing was written.`);
+    }
+  }
+  const enabled = plainObject(settings.enabledPlugins);
+  if (enabled !== null) {
+    for (const [name, value] of Object.entries(enabled)) {
+      if (value !== true) {
+        throw new Error(
+          `Refusing bundle: enabledPlugins["${name}"] is not true; export never writes disabled entries. Nothing was written.`,
+        );
+      }
+    }
+  }
+}
+
+function readBundleSettings(content: Buffer): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content.toString("utf8"));
+  } catch {
+    throw new Error("Refusing bundle: settings.json is not valid JSON.");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Refusing bundle: settings.json is not an object.");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function plainObject(value: unknown): Record<string, unknown> | null {
+  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
 // Settled decision 5, receive side: hooks and statusLine are arbitrary shell
 // commands, so the machine that runs them re-confirms each one. Anything not
 // named in confirmedHooks is stripped from the bundle's settings.json.
@@ -159,25 +221,15 @@ export function gateSettingsHooks(bundle: LoadedBundle, confirmedHooks: string[]
     if (confirmedHooks.length > 0) throw new Error("--hook given but the bundle carries no settings.json.");
     return [];
   }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(entry.content.toString("utf8"));
-  } catch {
-    throw new Error("Refusing bundle: settings.json is not valid JSON.");
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Refusing bundle: settings.json is not an object.");
-  }
-  const settings = parsed as Record<string, unknown>;
+  const settings = readBundleSettings(entry.content);
 
   const present = new Set<string>();
   if ("statusLine" in settings) present.add("settings.statusLine");
   const hooks = settings.hooks;
-  const hookEvents =
-    hooks !== null && hooks !== undefined && typeof hooks === "object" && !Array.isArray(hooks)
-      ? Object.keys(hooks as Record<string, unknown>)
-      : [];
+  if (hooks !== undefined && plainObject(hooks) === null) {
+    throw new Error('Refusing bundle: settings.json "hooks" is not an object. Nothing was written.');
+  }
+  const hookEvents = hooks === undefined ? [] : Object.keys(hooks as Record<string, unknown>);
   for (const event of hookEvents) present.add(`hooks.${event}`);
 
   for (const requested of confirmedHooks) {
@@ -223,58 +275,61 @@ export function gateSettingsHooks(bundle: LoadedBundle, confirmedHooks: string[]
 // Enabling a plugin makes the target install and run marketplace code, so the
 // receiving machine re-confirms each one, exactly as it does for hooks.
 // Anything not named in confirmedPlugins is stripped from the bundle's
-// settings.json, along with marketplaces no surviving plugin references.
+// settings.json. Marketplace pruning is unconditional: a marketplace survives
+// only when a CONFIRMED plugin references it, so neither a bundle with
+// marketplaces and no plugins nor an unreferenced marketplace riding beside
+// fully-confirmed plugins can smuggle one through.
 export function gateSettingsPlugins(bundle: LoadedBundle, confirmedPlugins: string[]): string[] {
   const entry = bundle.files.get("settings.json");
   if (entry === undefined) {
     if (confirmedPlugins.length > 0) throw new Error("--plugin given but the bundle carries no settings.json.");
     return [];
   }
+  const settings = readBundleSettings(entry.content);
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(entry.content.toString("utf8"));
-  } catch {
-    throw new Error("Refusing bundle: settings.json is not valid JSON.");
+  const enabledRaw = settings.enabledPlugins;
+  if (enabledRaw !== undefined && plainObject(enabledRaw) === null) {
+    throw new Error('Refusing bundle: settings.json "enabledPlugins" is not an object. Nothing was written.');
   }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Refusing bundle: settings.json is not an object.");
+  const marketplacesRaw = settings.extraKnownMarketplaces;
+  if (marketplacesRaw !== undefined && plainObject(marketplacesRaw) === null) {
+    throw new Error('Refusing bundle: settings.json "extraKnownMarketplaces" is not an object. Nothing was written.');
   }
-  const settings = parsed as Record<string, unknown>;
+  if (enabledRaw === undefined && marketplacesRaw === undefined) {
+    if (confirmedPlugins.length > 0) {
+      throw new Error(`--plugin ${confirmedPlugins[0]} does not match anything in this bundle.`);
+    }
+    return [];
+  }
 
-  const enabled = settings.enabledPlugins;
-  const pluginNames =
-    enabled !== null && enabled !== undefined && typeof enabled === "object" && !Array.isArray(enabled)
-      ? Object.keys(enabled as Record<string, unknown>)
-      : [];
+  const enabled = plainObject(enabledRaw) ?? {};
+  const pluginNames = Object.keys(enabled);
   for (const requested of confirmedPlugins) {
     if (!pluginNames.includes(requested)) {
       throw new Error(`--plugin ${requested} does not match anything in this bundle.`);
     }
   }
-  if (pluginNames.length === 0) return [];
 
   const confirmed = new Set(confirmedPlugins);
   const withheld: string[] = [];
   const kept: Record<string, unknown> = {};
   for (const name of pluginNames.sort()) {
-    if (confirmed.has(name)) kept[name] = (enabled as Record<string, unknown>)[name];
+    if (confirmed.has(name)) kept[name] = enabled[name];
     else withheld.push(name);
   }
-  if (withheld.length === 0) return [];
 
   if (Object.keys(kept).length > 0) settings.enabledPlugins = kept;
   else delete settings.enabledPlugins;
 
-  const marketplaces = settings.extraKnownMarketplaces;
-  if (marketplaces !== null && marketplaces !== undefined && typeof marketplaces === "object" && !Array.isArray(marketplaces)) {
+  const marketplaces = plainObject(marketplacesRaw);
+  if (marketplaces !== null) {
     const referenced = new Set(
       Object.keys(kept)
         .map((name) => name.split("@")[1])
         .filter((name): name is string => name !== undefined),
     );
     const keptMarketplaces: Record<string, unknown> = {};
-    for (const [name, source] of Object.entries(marketplaces as Record<string, unknown>)) {
+    for (const [name, source] of Object.entries(marketplaces)) {
       if (referenced.has(name)) keptMarketplaces[name] = source;
     }
     if (Object.keys(keptMarketplaces).length > 0) settings.extraKnownMarketplaces = keptMarketplaces;
