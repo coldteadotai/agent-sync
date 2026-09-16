@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isSensitiveKey, type JsonValue } from "../scan/classify.js";
+import { scanContentForSecrets } from "./secrets.js";
 import { isRepresentableTreePath } from "./tar.js";
 import { PORTABLE_SETTINGS_KEYS, scanClaudeCode } from "../scan/scanner.js";
 import type { Diagnostic, ScanItem } from "../scan/types.js";
@@ -73,10 +74,17 @@ export interface BundleEntry {
   executable: boolean;
 }
 
+export interface SecretPathFinding {
+  path: string;
+  line: number;
+  kind: string;
+}
+
 export interface ExportPlan {
   manifest: Manifest;
   entries: BundleEntry[];
   skipped: { path: string; reason: string }[];
+  secretFindings: SecretPathFinding[];
   diagnostics: Diagnostic[];
 }
 
@@ -86,6 +94,7 @@ export interface CollectOptions {
   confirmedHooks?: string[];
   selectedPlugins?: string[];
   skips?: string[];
+  allowSecrets?: string[];
 }
 
 // The flag spelling of a picker row: "skill/boxd-cli", "memory/CLAUDE.md", "settings".
@@ -98,6 +107,7 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
   const confirmedHooks = options.confirmedHooks ?? [];
   const selectedPlugins = options.selectedPlugins ?? [];
   const skips = new Set(options.skips ?? []);
+  const allowSecrets = new Set(options.allowSecrets ?? []);
 
   const scanOptions: Parameters<typeof scanClaudeCode>[0] = { userDir, projectDir: null };
   if (options.claudeJsonPath !== undefined) scanOptions.claudeJsonPath = options.claudeJsonPath;
@@ -105,6 +115,7 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
 
   const entries: BundleEntry[] = [];
   const skipped: { path: string; reason: string }[] = [];
+  const secretFindings: SecretPathFinding[] = [];
   const diagnostics: Diagnostic[] = [...report.diagnostics];
   let totalBytes = 0;
 
@@ -112,6 +123,22 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
     if (!isRepresentableTreePath(`files/${bundlePath}`)) {
       skipped.push({ path: bundlePath, reason: "path too long for a tar archive" });
       return;
+    }
+    // Content that looks like a secret refuses by default; --allow-secret is
+    // the named override. The reason names the file and line, never the value.
+    const secrets = scanContentForSecrets(content);
+    if (secrets.length > 0) {
+      const first = secrets[0];
+      if (first !== undefined) {
+        for (const finding of secrets) secretFindings.push({ path: bundlePath, ...finding });
+        if (!allowSecrets.has(bundlePath)) {
+          skipped.push({
+            path: bundlePath,
+            reason: `content matches a ${first.kind} pattern (line ${first.line}); pass --allow-secret ${bundlePath} to carry it anyway`,
+          });
+          return;
+        }
+      }
     }
     if (content.length > MAX_FILE_BYTES) {
       skipped.push({ path: bundlePath, reason: `larger than the ${MAX_FILE_BYTES} byte per-file limit` });
@@ -206,8 +233,17 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
     });
   }
 
+  for (const requested of allowSecrets) {
+    if (!secretFindings.some((finding) => finding.path === requested)) {
+      diagnostics.push({
+        severity: "error",
+        message: `--allow-secret ${requested} does not match any file with a secret finding.`,
+      });
+    }
+  }
+
   entries.sort((a, b) => (a.path < b.path ? -1 : 1));
-  return { manifest, entries, skipped, diagnostics };
+  return { manifest, entries, skipped, secretFindings, diagnostics };
 }
 
 function toManifestServer(item: ScanItem): ManifestMcpServer {
