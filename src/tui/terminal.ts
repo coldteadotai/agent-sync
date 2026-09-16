@@ -91,6 +91,9 @@ export class Screen {
   private liveRows = 0;
   private lastLive: string[] = [];
   private keyListener: ((key: Key) => void) | null = null;
+  // Keys arriving while no waiter is attached (pasted bursts, fast typists)
+  // queue instead of dropping; waitKey drains the queue first.
+  private keyQueue: Key[] = [];
   private opened = false;
   private restore: (() => void) | null = null;
   private resizeHandler = (): void => {
@@ -159,6 +162,8 @@ export class Screen {
   }
 
   waitKey(): Promise<Key> {
+    const queued = this.keyQueue.shift();
+    if (queued !== undefined) return Promise.resolve(queued);
     return new Promise((resolve) => {
       this.onKey((key) => {
         this.onKey(null);
@@ -199,12 +204,11 @@ export class Screen {
   }
 
   private onKeypress = (char: string | undefined, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean; sequence?: string } | undefined): void => {
-    if (!this.keyListener) return;
     const name = key?.name ?? "";
     const sequence = key?.sequence ?? char ?? "";
     const printable =
       sequence.length === 1 && !key?.ctrl && !key?.meta && sequence >= " " ? sequence : null;
-    this.keyListener({
+    this.deliver({
       name: key?.ctrl && name === "c" ? "cancel" : name === "escape" ? "escape" : name,
       ctrl: key?.ctrl ?? false,
       meta: key?.meta ?? false,
@@ -213,9 +217,14 @@ export class Screen {
     });
   };
 
+  private deliver(key: Key): void {
+    if (this.keyListener) this.keyListener(key);
+    else if (this.keyQueue.length < 64) this.keyQueue.push(key);
+  }
+
   private onEof = (): void => {
     // Stdin ending mid-prompt must cancel, never hang (the CI trap).
-    this.keyListener?.({ name: "cancel", ctrl: false, meta: false, shift: false, char: null });
+    this.deliver({ name: "cancel", ctrl: false, meta: false, shift: false, char: null });
   };
 }
 
