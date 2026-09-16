@@ -41,6 +41,9 @@ export function scanContentForSecrets(content: Buffer): SecretFinding[] {
     }
     for (const candidate of text.match(ENTROPY_CANDIDATE) ?? []) {
       if (/^[0-9a-fA-F]+$/.test(candidate)) continue;
+      // Subresource-integrity hashes (npm/yarn/pnpm lockfiles) are random
+      // base64 by construction and would cry wolf on every shipped lockfile.
+      if (/^sha(1|256|384|512)-/.test(candidate)) continue;
       if (shannonEntropy(candidate) >= ENTROPY_THRESHOLD) {
         findings.push({ line: index + 1, kind: "high-entropy string" });
         return;

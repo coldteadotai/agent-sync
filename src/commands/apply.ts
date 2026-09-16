@@ -65,9 +65,15 @@ export const applyCommand: CommandDef = {
     const dryRun = values["dry-run"] === true;
 
     // Any consent or mode flag keeps the exact static surface; only a bare
-    // `apply <bundle>` on TTYs outside CI goes interactive (frame 4).
+    // `apply <bundle>` on TTYs outside CI goes interactive (frame 4). A "-"
+    // source is always static: stdin IS the bundle, so there is nothing left
+    // to read consent from.
     const anyStaticFlag =
-      confirmedHooks.length > 0 || confirmedPlugins.length > 0 || requestedMcp.length > 0 || dryRun;
+      confirmedHooks.length > 0 ||
+      confirmedPlugins.length > 0 ||
+      requestedMcp.length > 0 ||
+      dryRun ||
+      source === "-";
     const mode = anyStaticFlag
       ? "static"
       : chooseEntry({

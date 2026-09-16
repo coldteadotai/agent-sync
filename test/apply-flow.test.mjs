@@ -79,6 +79,13 @@ test("secret patterns match planted tokens and skip hashes, prose and binaries",
     "long identifiers must not trip the entropy detector",
   );
   assert.deepEqual(scanContentForSecrets(Buffer.concat([Buffer.from("a"), Buffer.from([0]), Buffer.from("b")])), []);
+
+  const npmLock = '    "integrity": "sha512-C3TGLGfBTGVv0uKnwm7hM1TeQzHzHJcPmnR6wIYWrlBUv0Q+YvJPGvjLBP7bnTL5oRVDCafUOOXHDrGe0DsQjA=="\n';
+  const yarnLock = "  integrity sha512-C3TGLGfBTGVv0uKnwm7hM1TeQzHzHJcPmnR6wIYWrlBUv0Q+YvJPGvjLBP7bnTL5oRVDCafUOOXHDrGe0DsQjA==\n";
+  const sri384 = 'crossorigin integrity="sha384-oqVuAfXRKap7fdgcCY5uykM6+R9GqQ8K/uxy9rx7HNQlGYl1kPzQho1wx4JwY8wC"\n';
+  assert.deepEqual(scanContentForSecrets(Buffer.from(npmLock)), [], "npm lockfile integrity must not trip");
+  assert.deepEqual(scanContentForSecrets(Buffer.from(yarnLock)), [], "yarn lockfile integrity must not trip");
+  assert.deepEqual(scanContentForSecrets(Buffer.from(sri384)), [], "SRI attribute must not trip");
 });
 
 test("a planted token refuses the file by default and never appears in any output", () => {
@@ -263,6 +270,21 @@ test("apply flag echo spells the scripted equivalent", () => {
     applyFlagEcho({ source: "b.tgz", target: "/x/y", hooks: [], plugins: [], mcp: [] }),
     "agent-sync apply b.tgz --target /x/y",
   );
+});
+
+test("apply from stdin stays static even with --plain: stdin IS the bundle", () => {
+  const bundlePath = exportBundle("stdin-bundle.tgz");
+  const target = join(root, "stdin-target");
+  mkdirSync(target, { recursive: true });
+  const output = execFileSync(
+    process.execPath,
+    ["bin/agent-sync.mjs", "apply", "-", "--plain", "--target", target],
+    { cwd: REPO_ROOT, encoding: "utf8", input: readFileSync(bundlePath) },
+  );
+  assert.match(output, /Withheld hooks\.PostToolUse/, "the static consent surface must run");
+  assert.match(output, /Done: /);
+  const applied = JSON.parse(readFileSync(join(target, "settings.json"), "utf8"));
+  assert.ok(!("hooks" in applied), "an unconsented hook applied from a stdin bundle");
 });
 
 test("piped apply keeps the static surface", () => {

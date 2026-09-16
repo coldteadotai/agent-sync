@@ -342,11 +342,12 @@ export async function runGuidedApply(
     const unchanged = preview.actions.length - changing.length;
     ui.note([
       `Bundle verified · ${bundle.manifest.files.length} files, every hash checked, nothing written yet`,
-      ...changing.map((action) =>
-        action.kind === "update"
-          ? `update  ${action.path} (backed up first · undo restores it)`
-          : `create  ${action.path}`,
-      ),
+      ...changing.map((action) => {
+        const consentNote = action.path === "settings.json" ? " · final content follows your answers below" : "";
+        return action.kind === "update"
+          ? `update  ${action.path} (backed up first · undo restores it)${consentNote}`
+          : `create  ${action.path}${consentNote}`;
+      }),
       ...(unchanged > 0 ? [`${unchanged} unchanged`] : []),
     ]);
 
