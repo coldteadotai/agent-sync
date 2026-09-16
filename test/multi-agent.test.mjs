@@ -362,7 +362,7 @@ test("apply warns when the target's opencode.jsonc would shadow the applied open
   assert.match(output, /opencode\.jsonc, which OpenCode may read instead/);
 });
 
-test("undo prunes directories the apply created, but never one the user still owns", () => {
+test("undo prunes directories the apply created, but never one the user made", () => {
   const bundlePath = join(root, "prune.tgz");
   execFileSync(process.execPath, ["bin/agent-sync.mjs", "export", bundlePath], {
     cwd: REPO_ROOT,
@@ -371,6 +371,9 @@ test("undo prunes directories the apply created, but never one the user still ow
   const home = join(root, "prune-home");
   mkdirSync(join(home, ".claude", "skills"), { recursive: true });
   writeFileSync(join(home, ".claude", "skills", "keep.txt"), "user file\n");
+  // A user-made directory that apply fills and undo empties again: it existed
+  // before the apply, so it must survive the prune even though it ends empty.
+  mkdirSync(join(home, ".config", "opencode", "commands"), { recursive: true });
   const run = (args) =>
     execFileSync(process.execPath, ["bin/agent-sync.mjs", ...args], {
       cwd: REPO_ROOT,
@@ -384,6 +387,10 @@ test("undo prunes directories the apply created, but never one the user still ow
   assert.ok(existsSync(join(home, ".agents")), "the agent root itself must survive");
   assert.ok(!existsSync(join(home, ".claude", "skills", "reviewer")), "created skill dir must be pruned");
   assert.ok(existsSync(join(home, ".claude", "skills", "keep.txt")), "a user's own file must keep its directory");
+  assert.ok(
+    existsSync(join(home, ".config", "opencode", "commands")),
+    "a pre-existing user directory must survive even when undo leaves it empty",
+  );
 });
 
 test("symlink containment holds per agent root", () => {
