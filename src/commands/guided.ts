@@ -25,7 +25,10 @@ import { createTheme } from "../tui/theme.js";
 import { Screen } from "../tui/terminal.js";
 import { createFlow, type Flow, type MultiGroup } from "../tui/components.js";
 import { Plain } from "../tui/plain.js";
+import { wordmarkLines } from "../tui/wordmark.js";
 import { buildTar, writeBundleDirectory } from "./export.js";
+
+declare const __PKG_VERSION__: string;
 
 export type GuidedMode = "picker" | "plain";
 
@@ -161,9 +164,10 @@ function factsLines(reports: ScanReport[]): string[] {
     codex: "Codex",
     opencode: "OpenCode",
   };
-  return reports.map((report) => {
+  return reports.flatMap((report) => {
+    // Absent agents are simply not mentioned; the card lists what IS here.
+    if (!report.present) return [];
     const title = titles[report.agent].padEnd(13);
-    if (!report.present) return `${title} not installed`;
     const userItems = report.items.filter((item) => item.scope === "user");
     const counts: string[] = [];
     for (const [kind, label] of [
@@ -180,7 +184,7 @@ function factsLines(reports: ScanReport[]): string[] {
       if (total === 0) continue;
       counts.push(kind === "settings" || kind === "memory" ? label : `${total} ${label}`);
     }
-    return `${title} ${counts.length > 0 ? counts.join(" · ") : "nothing to sync"}`;
+    return [`${title} ${counts.length > 0 ? counts.join(" · ") : "nothing to sync"}`];
   });
 }
 
@@ -221,9 +225,9 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
     return 0;
   }
 
-  const ui = mode === "picker" ? pickerUi(overrides) : plainUi(io, overrides);
+  const ui = mode === "picker" ? pickerUi({ ...overrides, wordmark: true }) : plainUi(io, overrides);
   try {
-    ui.intro("agent-sync", "guided export", factsLines(reports));
+    ui.intro("found on this machine", `carry your agent setup anywhere ${"·"} v${__PKG_VERSION__}`, factsLines(reports));
 
     const travel = await ui.groupMultiselect("What should travel?", groups);
     if (travel === null) return 2;
@@ -238,13 +242,14 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
 
     let hooks: string[] = [];
     if (hookGroup !== null) {
-      const picked = await ui.groupMultiselect("Which hooks may travel?", [hookGroup]);
+      const picked = await ui.groupMultiselect(
+        "Which hooks may travel?",
+        [hookGroup],
+        "hooks run shell commands on the target \u00b7 none travel unless you pick them",
+      );
       if (picked === null) return 2;
       hooks = picked;
     }
-
-    const dest = await ui.select("Where should the bundle go?", DESTINATIONS);
-    if (dest === null) return 2;
 
     const collectOptions: Parameters<typeof collectExport>[0] = {
       confirmedHooks: hooks,
@@ -291,21 +296,27 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
     }
 
     const totalBytes = plan.entries.reduce((sum, entry) => sum + entry.content.length, 0);
-    // The review is everything that leaves the machine, so consented hooks and
-    // plugins are named here, not just counted into the file total.
-    const review = [
-      `Would pack ${plan.entries.length} files (${formatBytes(totalBytes)}) + manifest.json`,
-      ...hooks.map((name) => `hook confirmed: ${name}`),
-      ...plugins.map((name) => `plugin reference: ${name}`),
-      ...plan.skipped.map((skip) => `skipped: ${skip.path} — ${skip.reason}`),
-    ];
-    ui.note(review);
-
-    const confirmed = await ui.confirm(`Write ${dest === "agent-sync-bundle" ? "agent-sync-bundle/" : dest}?`);
-    if (confirmed === null) return 2;
-    if (!confirmed) {
-      ui.outro("Nothing was written.");
-      return 0;
+    // The review IS the product promise: the actual tree of what leaves the
+    // machine, read before anything is written. The destination is a named
+    // default inside the confirm, not a step of its own.
+    let dest = "setup.tgz";
+    for (;;) {
+      const choice = await ui.review(buildReviewLines(plan, hooks, plugins, report.excluded.length), destLabel(dest));
+      if (choice === null) return 2;
+      if (choice === "skip") {
+        ui.outro(
+          "Nothing was written.",
+          `To pack a different way, scripted: ${flagEcho({ skips, plugins, hooks, allowSecrets, dest })}`,
+        );
+        return 0;
+      }
+      if (choice === "dest") {
+        const picked = await ui.select("Where should the bundle go?", DESTINATIONS);
+        if (picked === null) return 2;
+        dest = picked;
+        continue;
+      }
+      break;
     }
 
     const destPath = join(overrides.destDir ?? process.cwd(), dest);
@@ -313,13 +324,105 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
 
     const selections: Selections = { skips, plugins, hooks, allowSecrets, dest };
     ui.outro(
-      `Packed ${plan.entries.length} files (${formatBytes(totalBytes)}) to ${dest === "agent-sync-bundle" ? "agent-sync-bundle/" : dest}`,
-      `Next time, non-interactively: ${flagEcho(selections)}`,
+      `Packed ${plan.entries.length} files (${formatBytes(totalBytes)}) -> ${destLabel(dest)}`,
+      `Next time, scripted: ${flagEcho(selections)}`,
+      `Apply on the other side: npx @coldtea/agent-sync@latest apply ${destLabel(dest)}`,
     );
     return 0;
   } finally {
     ui.close();
   }
+}
+
+function destLabel(dest: string): string {
+  return dest === "agent-sync-bundle" ? "agent-sync-bundle/" : dest;
+}
+
+// The review screen must never scroll its own prompt away: renderLive slices
+// top-first, so a tree taller than the terminal would cut "Pack it?". The
+// tree yields instead — head lines, an elision count, and always the closing
+// consent-accounting line.
+export function fitReviewLines(lines: string[], budget: number): string[] {
+  if (lines.length <= budget || budget < 4) return lines.slice(0, Math.max(budget, 4));
+  const tail = lines.slice(-2);
+  const head = lines.slice(0, budget - 3);
+  const elided = lines.length - head.length - tail.length;
+  return [...head, `... ${elided} more`, ...tail];
+}
+
+// The bundle as a readable tree: skill directories aggregate to a count and
+// size, config files name the keys they carry, and the closing line accounts
+// for consents and exclusions, so the screen is the manifest in prose.
+export function buildReviewLines(
+  plan: ExportPlan,
+  hooks: string[],
+  plugins: string[],
+  excludedCount: number,
+): string[] {
+  const lines: string[] = [];
+  const seenDirGroups = new Set<string>();
+  const annotate = (path: string, content: Buffer): string => {
+    const name = path.split("/").pop() ?? path;
+    if (name === "CLAUDE.md" || name === "AGENTS.md") return "memory";
+    if (name.endsWith(".json") || name.endsWith(".toml")) {
+      try {
+        // TOML lines must look like a bare-key assignment to count as a key:
+        // anything else (section headers, multi-line array elements, closing
+        // brackets) is CONTENT and must never reach the screen.
+        const keys =
+          name.endsWith(".json")
+            ? Object.keys(JSON.parse(content.toString("utf8")) as Record<string, unknown>)
+            : content
+                .toString("utf8")
+                .split("\n")
+                .map((line) => /^\s*([A-Za-z0-9_.-]+)\s*=/.exec(line)?.[1] ?? "")
+                .filter((key) => key.length > 0);
+        if (keys.length > 0) return keys.sort().join(", ");
+      } catch {
+        // Annotation only; an unparseable file just goes unannotated.
+      }
+    }
+    return "";
+  };
+
+  const pad = (name: string, note: string, indent: string): string =>
+    note.length > 0 ? `${indent}${name.padEnd(Math.max(22 - indent.length + 2, name.length + 2))}${note}` : `${indent}${name}`;
+
+  for (const entry of plan.entries) {
+    const parts = entry.path.split("/");
+    if (parts.length === 1) {
+      lines.push(pad(entry.path, annotate(entry.path, entry.content), ""));
+      continue;
+    }
+    // skills/<name>/** and codex/skills/<name>/** aggregate per skill dir;
+    // every other nested path lists as a file under its top-level dir.
+    const isSkillTree = parts[0] === "skills" || (parts[0] === "codex" && parts[1] === "skills");
+    const groupKey = isSkillTree ? parts.slice(0, parts[0] === "codex" ? 3 : 2).join("/") : null;
+    const header = `${parts[0]}/`;
+    if (!seenDirGroups.has(header)) {
+      seenDirGroups.add(header);
+      lines.push(header);
+    }
+    if (groupKey !== null) {
+      if (seenDirGroups.has(groupKey)) continue;
+      seenDirGroups.add(groupKey);
+      const members = plan.entries.filter((candidate) => candidate.path.startsWith(`${groupKey}/`));
+      const bytes = members.reduce((sum, member) => sum + member.content.length, 0);
+      const label = `${groupKey.split("/").pop() ?? groupKey}/`;
+      lines.push(pad(label, `${members.length} files, ${formatBytes(bytes)}`, "  "));
+    } else {
+      const rest = parts.slice(1).join("/");
+      lines.push(pad(rest, annotate(entry.path, entry.content), "  "));
+    }
+  }
+  lines.push(pad("manifest.json", "hashes for every file above", ""));
+  lines.push("");
+  lines.push(
+    `hooks: ${hooks.length > 0 ? hooks.join(", ") : "none"} | plugins: ${
+      plugins.length > 0 ? plugins.join(", ") : "none"
+    } | ${excludedCount} excluded item${excludedCount === 1 ? "" : "s"} stayed behind`,
+  );
+  return lines;
 }
 
 function writeDestination(destPath: string, dest: string, plan: ExportPlan): void {
@@ -529,33 +632,48 @@ export async function runGuidedApply(
   }
 }
 
-// Both modes speak the same five verbs; null means the user cancelled.
+// Both modes speak the same verbs; null means the user cancelled.
 interface GuidedUi {
   intro(title: string, subtitle: string, facts: string[]): void;
   note(lines: string[]): void;
-  groupMultiselect(message: string, groups: MultiGroup<string>[]): Promise<string[] | null>;
+  groupMultiselect(message: string, groups: MultiGroup<string>[], coach?: string): Promise<string[] | null>;
   select(message: string, items: typeof DESTINATIONS): Promise<string | null>;
   confirm(message: string, initial?: boolean): Promise<boolean | null>;
+  review(lines: string[], dest: string): Promise<"pack" | "skip" | "dest" | null>;
   outro(...lines: string[]): void;
   close(): void;
 }
 
-function pickerUi(overrides: GuidedOverrides): GuidedUi {
+function pickerUi(overrides: GuidedOverrides & { wordmark?: boolean }): GuidedUi {
   const theme = createTheme(overrides.env === undefined ? {} : { env: overrides.env });
   const screen = overrides.screen ?? new Screen({ ellipsis: theme.glyphs.ellipsis });
   const flow: Flow = createFlow(screen, theme);
+  const g = theme.glyphs;
+  const bar = theme.paint("accent", g.bar);
   let open = false;
+  // Prose from the flow layer spells separators as the unicode mid-dot; the
+  // UI owns rendering, so it swaps in the theme separator (ascii "-").
+  const fmt = (text: string): string => text.replaceAll("\u00b7", g.sep);
   return {
     intro(title, subtitle, facts) {
-      flow.intro(title, subtitle);
-      open = true;
+      if (overrides.wordmark === true) {
+        screen.open();
+        open = true;
+        screen.commit(["", ...wordmarkLines(theme, screen.columns), theme.paint("dim", fmt(subtitle)), ""]);
+        flow.intro(title);
+      } else {
+        flow.intro(title, subtitle);
+        open = true;
+      }
       if (facts.length > 0) flow.note(facts);
     },
     note(lines) {
       flow.note(lines);
     },
-    async groupMultiselect(message, groups) {
-      const result = await flow.groupMultiselect(message, groups);
+    async groupMultiselect(message, groups, coach) {
+      const options: { coach?: string } = {};
+      if (coach !== undefined) options.coach = fmt(coach);
+      const result = await flow.groupMultiselect(message, groups, options);
       if (result.cancelled) open = false;
       return result.cancelled ? null : result.value;
     },
@@ -569,9 +687,54 @@ function pickerUi(overrides: GuidedOverrides): GuidedUi {
       if (result.cancelled) open = false;
       return result.cancelled ? null : result.value;
     },
+    // The review screen: the bundle tree, then "Pack it?" with the
+    // destination as a named default. y packs, n leaves, d changes the
+    // destination, esc cancels. The picker still owns no writes.
+    async review(lines, dest) {
+      const message = "This is what leaves the machine";
+      for (;;) {
+        const fitted = fitReviewLines(lines, Math.max(4, screen.rows - 6));
+        screen.renderLive([
+          `${theme.paint("accent", g.stepActive)}  ${theme.paint("bright", message)}`,
+          bar,
+          ...fitted.map((line) => `${bar}  ${line.length > 0 ? line : ""}`),
+          bar,
+          `${bar}  ${theme.paint("bright", "Pack it?")}  ${theme.paint("ok", dest)}  ${theme.paint("dim", "(y / n / d changes destination)")}`,
+          `${theme.paint("accent", g.railEnd)}  ${theme.paint("dim", ["y pack", "d destination", "esc cancel"].join(` ${g.sep} `))}`,
+        ]);
+        const key = await screen.waitKey();
+        if (key.name === "cancel" || key.name === "escape") {
+          screen.commit([
+            `${theme.paint("bad", g.stepError)}  ${theme.paint("strike", message)}`,
+            `${theme.paint("accent", g.railEnd)}  ${theme.paint("bright", "Cancelled. Nothing was written.")}`,
+          ]);
+          screen.close();
+          open = false;
+          return null;
+        }
+        const lower = key.char?.toLowerCase();
+        if (lower === "y" || key.name === "return" || key.name === "enter") {
+          screen.clearLive();
+          screen.commit([
+            `${theme.paint("ok", g.stepDone)}  ${message} ${theme.paint("dim", `${g.sep} ${dest}`)}`,
+            bar,
+          ]);
+          return "pack";
+        }
+        if (lower === "n") {
+          screen.clearLive();
+          screen.commit([`${theme.paint("ok", g.stepDone)}  ${message} ${theme.paint("dim", `${g.sep} not packed`)}`, bar]);
+          return "skip";
+        }
+        if (lower === "d") {
+          screen.clearLive();
+          return "dest";
+        }
+      }
+    },
     outro(...lines) {
       // Lines print in order; the last one lands on the rail end, so the
-      // flag-echo teaching line closes the transcript.
+      // teaching lines close the transcript.
       if (lines.length > 1) flow.note(lines.slice(0, -1));
       flow.outro(lines[lines.length - 1] ?? "");
       open = false;
@@ -585,16 +748,18 @@ function pickerUi(overrides: GuidedOverrides): GuidedUi {
 
 function plainUi(io: CommandIo, overrides: GuidedOverrides): GuidedUi {
   const plain = overrides.plain ?? new Plain();
+  const fmt = (text: string): string => text.replaceAll("\u00b7", "-");
   return {
     intro(title, subtitle, facts) {
-      plain.say(`${title} — ${subtitle} (plain mode)`);
+      plain.say(`${title} - ${fmt(subtitle)} (plain mode)`);
       for (const fact of facts) plain.say(fact);
       plain.say("");
     },
     note(lines) {
       for (const line of lines) plain.say(line);
     },
-    async groupMultiselect(message, groups) {
+    async groupMultiselect(message, groups, coach) {
+      if (coach !== undefined) plain.say(fmt(coach));
       const result = await plain.groupMultiselect(message, groups);
       if (result.cancelled) io.err("Cancelled. Nothing was written.");
       return result.cancelled ? null : result.value;
@@ -608,6 +773,19 @@ function plainUi(io: CommandIo, overrides: GuidedOverrides): GuidedUi {
       const result = await plain.confirm(message, initial);
       if (result.cancelled) io.err("Cancelled. Nothing was written.");
       return result.cancelled ? null : result.value;
+    },
+    // Plain mode reads the same tree and answers one y/N; changing the
+    // destination in plain mode is the scripted flags' job, which the echo
+    // teaches on pack and on skip alike.
+    async review(lines, dest) {
+      plain.say("This is what leaves the machine:");
+      for (const line of lines) plain.say(line);
+      const result = await plain.confirm(`Pack to ${dest}?`, true);
+      if (result.cancelled) {
+        io.err("Cancelled. Nothing was written.");
+        return null;
+      }
+      return result.value ? "pack" : "skip";
     },
     outro(...lines) {
       for (const line of lines) plain.say(line);
