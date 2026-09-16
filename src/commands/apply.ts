@@ -3,7 +3,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CommandDef, ExitCode } from "../main.js";
 import { loadBundleFromBuffer, loadBundleFromDirectory, type LoadedBundle } from "../apply/bundle.js";
-import { assertPortableSettings, executeApply, gateSettingsHooks, gateSettingsPlugins, planApply } from "../apply/apply.js";
+import {
+  assertPortableSettings,
+  defaultAgentRoots,
+  executeApply,
+  gateSettingsHooks,
+  gateSettingsPlugins,
+  planApply,
+  splitBundleByRoot,
+} from "../apply/apply.js";
 import { planMcpRegistrations, runMcpRegistration } from "../apply/mcp.js";
 import { stringList } from "./export.js";
 import { chooseEntry, runGuidedApply } from "./guided.js";
@@ -54,11 +62,6 @@ export const applyCommand: CommandDef = {
       io.err("apply: exactly one bundle expected (directory, .tar, .tgz, or -).");
       return 2;
     }
-    const targetDir =
-      typeof values.target === "string"
-        ? values.target
-        : (process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"));
-
     const confirmedHooks = stringList(values.hook);
     const confirmedPlugins = stringList(values.plugin);
     const requestedMcp = stringList(values.mcp);
@@ -107,31 +110,43 @@ export const applyCommand: CommandDef = {
     // Registrations are validated before any file write so a bad --mcp refuses
     // the whole apply, not half of it.
     const registrations = planMcpRegistrations(bundle.manifest.mcpServers, requestedMcp);
-    const plan = planApply(bundle, targetDir);
 
-    const creates = plan.actions.filter((action) => action.kind === "create");
-    const updates = plan.actions.filter((action) => action.kind === "update");
+    // A bundle may span several agents; each agent root gets its own plan,
+    // marker and backups, and every root is planned (write-checked) before
+    // the first root writes, so a hostile layout in ANY root refuses all.
+    const roots = defaultAgentRoots(typeof values.target === "string" ? values.target : undefined);
+    const slices = splitBundleByRoot(bundle, roots);
+    const planned = slices.map((slice) => ({ slice, plan: planApply(slice.bundle, slice.root) }));
 
-    if (plan.previousMarker !== null && plan.addedSinceLast.length > 0) {
-      io.out(
-        `${plan.addedSinceLast.length} new since last apply: ${plan.addedSinceLast.join(", ")}`,
-      );
-    }
+    let totalCreated = 0;
+    let totalUpdated = 0;
+    for (const { slice, plan } of planned) {
+      const creates = plan.actions.filter((action) => action.kind === "create");
+      const updates = plan.actions.filter((action) => action.kind === "update");
 
-    if (creates.length === 0 && updates.length === 0) {
-      io.out(`Nothing to change in ${targetDir}; the bundle is already applied.`);
-    } else {
-      io.out(`${dryRun ? "Would apply" : "Applying"} to ${targetDir}:`);
+      if (plan.previousMarker !== null && plan.addedSinceLast.length > 0) {
+        io.out(`${plan.addedSinceLast.length} new since last apply: ${plan.addedSinceLast.join(", ")}`);
+      }
+
+      if (creates.length === 0 && updates.length === 0) {
+        io.out(`Nothing to change in ${slice.root}; already applied.`);
+        continue;
+      }
+      io.out(`${dryRun ? "Would apply" : "Applying"} to ${slice.root}:`);
       for (const action of plan.actions) {
         if (action.kind !== "unchanged") io.out(`  ${action.kind.padEnd(7)} ${action.path}`);
       }
       if (!dryRun) {
-        const marker = executeApply(bundle, targetDir, plan);
+        const marker = executeApply(slice.bundle, slice.root, plan);
         if (marker !== null && marker.updated.length > 0) {
           io.out(`Backed up ${marker.updated.length} overwritten file(s); \`agent-sync undo\` restores them.`);
         }
-        io.out(`Done: ${creates.length} created, ${updates.length} updated.`);
+        totalCreated += creates.length;
+        totalUpdated += updates.length;
       }
+    }
+    if (!dryRun && (totalCreated > 0 || totalUpdated > 0)) {
+      io.out(`Done: ${totalCreated} created, ${totalUpdated} updated.`);
     }
 
     let failedRegistrations = 0;

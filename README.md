@@ -47,7 +47,7 @@ agent-sync makes no network calls. `export` writes a local file and `apply` read
 
 ## Supported agents
 
-`scan` covers Claude Code, Codex, and OpenCode. `export`/`apply` sync Claude Code setups today; Codex and OpenCode sync is next, since their files span more than one directory root and deserve their own careful mapping.
+`scan`, `export`, and `apply` cover Claude Code, Codex, and OpenCode. Codex and OpenCode files travel under agent namespaces in the bundle (`codex/`, `opencode/`) and apply into the roots those tools actually read: `~/.codex` and `~/.agents/skills` for Codex, the XDG config dir for OpenCode; each root gets its own backup and undo marker. A bundle carrying Codex or OpenCode content is manifest schema 2 — an older agent-sync refuses it with a clear upgrade message; a Claude-only bundle stays schema 1, byte-compatible with v1. OpenCode plugin code never syncs (plugins run code), and MCP registration remains Claude-only for now, since it goes through `claude mcp add`.
 
 The full security design, including what the tool guarantees, the code that enforces each guarantee, and the known limitations, is in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 

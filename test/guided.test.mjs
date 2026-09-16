@@ -21,6 +21,7 @@ import {
 } from "../dist/main.js";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const fakeHome = mkdtempSync(join(tmpdir(), "agent-sync-fakehome-"));
 
 let root;
 let userDir;
@@ -58,7 +59,14 @@ after(() => {
 });
 
 function collect(options = {}) {
-  return collectExport({ userDir, claudeJsonPath, ...options });
+  return collectExport({
+    userDir,
+    claudeJsonPath,
+    codexHome: join(fakeHome, ".codex"),
+    codexAgentsDir: join(fakeHome, ".agents"),
+    opencodeConfigDir: join(fakeHome, ".config", "opencode"),
+    ...options,
+  });
 }
 
 test("entry rule: the picker engages only for bare TTY runs outside CI", () => {
@@ -288,7 +296,7 @@ test("apply withholds bundle plugins unless re-confirmed with --plugin", () => {
   const dest = join(root, "plugin-bundle");
   execFileSync(process.execPath, ["bin/agent-sync.mjs", "export", dest, "--plugin", "ponytail@ponytail-market"], {
     cwd: REPO_ROOT,
-    env: { ...process.env, CLAUDE_CONFIG_DIR: userDir },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: userDir, HOME: fakeHome, USERPROFILE: fakeHome },
   });
 
   const target = join(root, "apply-target");
@@ -329,7 +337,7 @@ test("guided picker flow: accepting every default writes setup.tgz and echoes th
   const fake = fakeScreenIo();
   const screen = new Screen({ input: fake.input, output: fake.output });
 
-  const running = runGuided(io, "picker", { userDir, claudeJsonPath, destDir, screen, env: {} });
+  const running = runGuided(io, "picker", { userDir, claudeJsonPath, codexHome: join(fakeHome, ".codex"), codexAgentsDir: join(fakeHome, ".agents"), opencodeConfigDir: join(fakeHome, ".config", "opencode"), destDir, screen, env: {} });
   setImmediate(() => {
     // travel picker, hooks picker, destination select, write confirm.
     for (let index = 0; index < 4; index += 1) {
@@ -362,7 +370,7 @@ test("guided plain flow: scripted answers write the bundle and close stdin", asy
   });
   const io = { out: () => {}, err: () => {} };
 
-  const code = await runGuided(io, "plain", { userDir, claudeJsonPath, destDir, plain });
+  const code = await runGuided(io, "plain", { userDir, claudeJsonPath, codexHome: join(fakeHome, ".codex"), codexAgentsDir: join(fakeHome, ".agents"), opencodeConfigDir: join(fakeHome, ".config", "opencode"), destDir, plain });
   assert.equal(code, 0);
   assert.ok(existsSync(join(destDir, "setup.tgz")));
   const transcript = said.join("");
@@ -378,7 +386,7 @@ test("guided flow cancel writes nothing and exits 2", async () => {
   const fake = fakeScreenIo();
   const screen = new Screen({ input: fake.input, output: fake.output });
 
-  const running = runGuided(io, "picker", { userDir, claudeJsonPath, destDir, screen, env: {} });
+  const running = runGuided(io, "picker", { userDir, claudeJsonPath, codexHome: join(fakeHome, ".codex"), codexAgentsDir: join(fakeHome, ".agents"), opencodeConfigDir: join(fakeHome, ".config", "opencode"), destDir, screen, env: {} });
   setImmediate(() => {
     fake.input.emit("keypress", undefined, { name: "c", ctrl: true, sequence: "\x03" });
   });
@@ -390,7 +398,7 @@ test("bare non-TTY invocation keeps the static usage surface", () => {
   const output = execFileSync(process.execPath, ["bin/agent-sync.mjs"], {
     cwd: REPO_ROOT,
     encoding: "utf8",
-    env: { ...process.env, CLAUDE_CONFIG_DIR: userDir },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: userDir, HOME: fakeHome, USERPROFILE: fakeHome },
   });
   assert.match(output, /^Usage: agent-sync/);
   assert.match(output, /guided export/);

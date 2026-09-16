@@ -24,7 +24,8 @@ export { scanContentForSecrets } from "./export/secrets.js";
 export { createTar } from "./export/tar.js";
 export { parseTar, validateArchivePath } from "./apply/untar.js";
 export { loadBundleFromBuffer, loadBundleFromDirectory, assertWritablePath } from "./apply/bundle.js";
-export { planApply, executeApply, assertPortableSettings, gateSettingsHooks, gateSettingsPlugins, undoLast, readMarker, resolveInside, resolveForWrite } from "./apply/apply.js";
+export { planApply, executeApply, assertPortableSettings, defaultAgentRoots, splitBundleByRoot, gateSettingsHooks, gateSettingsPlugins, undoLast, readMarker, resolveInside, resolveForWrite } from "./apply/apply.js";
+export type { AgentRoots, RootSlice } from "./apply/apply.js";
 
 declare const __PKG_VERSION__: string;
 
