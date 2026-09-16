@@ -240,7 +240,9 @@ export function renderMulti<T>(state: MultiState<T>, theme: Theme, maxRows: numb
   );
 
   // Short terminals: locked lines collapse to one before the list shrinks
-  // below usable, and the footer and error are never the rows that get cut.
+  // below usable, keeping the footer and error visible down to ~8 rows.
+  // Below that, renderLive's top-first slice cuts the footer — the accepted
+  // ceiling; no interactive terminal is 7 rows tall.
   let overhead = lines.length + lockedLines.length + footer.length;
   if (lockedCount > 0 && overhead + 3 > maxRows) {
     lockedLines = [

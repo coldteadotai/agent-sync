@@ -154,7 +154,12 @@ export class Screen {
       const handler = (): void => {
         this.close();
         process.removeListener(signal, handler);
-        process.kill(process.pid, signal);
+        try {
+          process.kill(process.pid, signal);
+        } catch {
+          // Windows uv_kill can't re-raise SIGHUP; the console is dying anyway.
+          process.exit(1);
+        }
       };
       this.signalHandlers.push([signal, handler]);
       process.on(signal, handler);
