@@ -8,14 +8,16 @@ agent-sync packs the portable part of your setup into a bundle you can read befo
 
 ## Status
 
-Implemented and tested; first npm release pending. Four commands:
+Published as [`@coldtea/agent-sync`](https://www.npmjs.com/package/@coldtea/agent-sync). Four commands and a guided mode:
 
 | Command | What it does |
 | --- | --- |
 | `scan` | Inventory your local setup and classify every item: portable, needs a secret, or excluded. Reads only; nothing leaves the machine. |
-| `export` | Write a manifest plus file bundle to a directory, tarball or stdout. `--dry-run` prints the exact file list and stops. Hooks are included only when you name each one with `--hook`. |
-| `apply` | Unpack a bundle on the target machine. Verifies every file against its manifest hash before writing anything, refuses hostile bundles whole, backs up what it overwrites, and names anything new since the last apply. Hooks need re-confirming with `--hook`; portable MCP servers register only when named with `--mcp`, through the agent's own CLI. |
+| `export` | Write a manifest plus file bundle to a directory, tarball or stdout. `--dry-run` prints the exact file list and stops. Hooks are included only when you name each one with `--hook`; plugins only with `--plugin` (as name and marketplace references, never code); `--skip` leaves any scanned item behind. |
+| `apply` | Unpack a bundle on the target machine. Verifies every file against its manifest hash before writing anything, refuses hostile bundles whole, backs up what it overwrites, and names anything new since the last apply. Hooks need re-confirming with `--hook` and plugin references with `--plugin`; portable MCP servers register only when named with `--mcp`, through the agent's own CLI. |
 | `undo` | Restore the backup the last `apply` saved and remove what it created. |
+
+Run bare `agent-sync` in a terminal for the guided export: it scans first, shows what can travel next to what never leaves the machine, asks about each hook with the command it would run, and ends by printing the exact flag spelling of what you chose, so the interactive run teaches the scripted one. `--plain` (or `AGENT_SYNC_ACCESSIBLE=1`, or `TERM=dumb`) swaps the picker for numbered-list prompts that screen readers can follow. In CI, in pipes, or with `--no-input`, nothing ever prompts.
 
 Transport is yours. A bundle is a plain file, so `scp` it, pipe it over ssh, or upload it through whatever your remote environment provides:
 

@@ -46,6 +46,12 @@ export interface ManifestHook {
   included: boolean;
 }
 
+export interface ManifestPlugin {
+  name: string;
+  included: boolean;
+  marketplace?: string;
+}
+
 export interface Manifest {
   schemaVersion: number;
   tool: "agent-sync";
@@ -53,6 +59,12 @@ export interface Manifest {
   files: ManifestFile[];
   mcpServers: ManifestMcpServer[];
   hooks: ManifestHook[];
+  // Additive since 0.2; older applies ignore it, so schemaVersion stays 1.
+  // NOTE: that reasoning no longer extends to settings keys. The receive side
+  // refuses settings.json keys it does not know (assertPortableSettings), so
+  // adding a portable key means older applies refuse newer bundles — bump the
+  // manifest schema when adding one.
+  plugins?: ManifestPlugin[];
 }
 
 export interface BundleEntry {
@@ -72,11 +84,20 @@ export interface CollectOptions {
   userDir?: string;
   claudeJsonPath?: string;
   confirmedHooks?: string[];
+  selectedPlugins?: string[];
+  skips?: string[];
+}
+
+// The flag spelling of a picker row: "skill/boxd-cli", "memory/CLAUDE.md", "settings".
+export function skipToken(item: Pick<ScanItem, "kind" | "name">): string {
+  return item.kind === "settings" ? "settings" : `${item.kind}/${item.name}`;
 }
 
 export function collectExport(options: CollectOptions = {}): ExportPlan {
   const userDir = options.userDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
   const confirmedHooks = options.confirmedHooks ?? [];
+  const selectedPlugins = options.selectedPlugins ?? [];
+  const skips = new Set(options.skips ?? []);
 
   const scanOptions: Parameters<typeof scanClaudeCode>[0] = { userDir, projectDir: null };
   if (options.claudeJsonPath !== undefined) scanOptions.claudeJsonPath = options.claudeJsonPath;
@@ -105,8 +126,21 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
   };
 
   const userItems = report.items.filter((item) => item.scope === "user");
+
+  const skippable = new Set(
+    userItems
+      .filter((item) => item.status === "candidate" && item.kind !== "mcp_server")
+      .map((item) => skipToken(item)),
+  );
+  for (const requested of skips) {
+    if (!skippable.has(requested)) {
+      diagnostics.push({ severity: "error", message: `--skip ${requested} does not match any scanned item.` });
+    }
+  }
+
   for (const item of userItems) {
     if (item.status !== "candidate") continue;
+    if (skips.has(skipToken(item))) continue;
     if (item.kind === "skill") {
       collectTree(join(userDir, "skills", item.name), `skills/${item.name}`, addFile, skipped);
     } else if (item.kind === "subagent") {
@@ -127,7 +161,21 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
   }
   const included = new Set(confirmedHooks.filter((name) => hookNames.has(name)));
 
-  const settingsContent = buildPortableSettings(join(userDir, "settings.json"), included, diagnostics);
+  const pluginItems = userItems.filter((item) => item.kind === "plugin" && item.status === "candidate");
+  const pluginNames = new Set(pluginItems.map((item) => item.name));
+  for (const requested of selectedPlugins) {
+    if (!pluginNames.has(requested)) {
+      diagnostics.push({ severity: "error", message: `--plugin ${requested} does not match any scanned plugin.` });
+    }
+  }
+  const includedPlugins = new Set(selectedPlugins.filter((name) => pluginNames.has(name)));
+
+  const settingsContent = buildPortableSettings(join(userDir, "settings.json"), {
+    includePreferences: !skips.has("settings"),
+    includedHooks: included,
+    includedPlugins,
+    diagnostics,
+  });
   if (settingsContent !== null) addFile("settings.json", settingsContent, false);
 
   const manifest: Manifest = {
@@ -150,6 +198,13 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
       .map((item) => toManifestServer(item)),
     hooks: hookItems.map((item) => ({ name: item.name, included: included.has(item.name) })),
   };
+  if (pluginItems.length > 0) {
+    manifest.plugins = pluginItems.map((item) => {
+      const plugin: ManifestPlugin = { name: item.name, included: includedPlugins.has(item.name) };
+      if (item.detail !== undefined) plugin.marketplace = item.detail;
+      return plugin;
+    });
+  }
 
   entries.sort((a, b) => (a.path < b.path ? -1 : 1));
   return { manifest, entries, skipped, diagnostics };
@@ -222,37 +277,70 @@ function collectRegularFile(
 
 function buildPortableSettings(
   settingsPath: string,
-  includedHooks: Set<string>,
-  diagnostics: Diagnostic[],
+  options: {
+    includePreferences: boolean;
+    includedHooks: Set<string>;
+    includedPlugins: Set<string>;
+    diagnostics: Diagnostic[];
+  },
 ): Buffer | null {
   if (!existsSync(settingsPath)) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(settingsPath, "utf8"));
   } catch {
-    diagnostics.push({ severity: "warning", message: `${settingsPath} could not be parsed; settings were not exported.` });
+    options.diagnostics.push({
+      severity: "warning",
+      message: `${settingsPath} could not be parsed; settings were not exported.`,
+    });
     return null;
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const source = parsed as { [key: string]: JsonValue };
 
   const portable: { [key: string]: JsonValue } = {};
-  for (const key of PORTABLE_SETTINGS_KEYS) {
-    if (key in source && !isSensitiveKey(key)) portable[key] = source[key] as JsonValue;
+  if (options.includePreferences) {
+    for (const key of PORTABLE_SETTINGS_KEYS) {
+      if (key in source && !isSensitiveKey(key)) portable[key] = source[key] as JsonValue;
+    }
   }
-  if (includedHooks.has("settings.statusLine") && "statusLine" in source) {
+  if (options.includedHooks.has("settings.statusLine") && "statusLine" in source) {
     portable.statusLine = source.statusLine as JsonValue;
   }
   const hooks = source.hooks;
   if (hooks !== null && hooks !== undefined && typeof hooks === "object" && !Array.isArray(hooks)) {
     const confirmed: { [key: string]: JsonValue } = {};
     for (const [event, config] of Object.entries(hooks)) {
-      if (includedHooks.has(`hooks.${event}`)) confirmed[event] = config;
+      if (options.includedHooks.has(`hooks.${event}`)) confirmed[event] = config;
     }
     if (Object.keys(confirmed).length > 0) portable.hooks = confirmed;
+  }
+
+  // Selected plugins travel as their enabledPlugins entries plus only the
+  // marketplace sources they reference — names and sources, never code.
+  if (options.includedPlugins.size > 0) {
+    const enabled = asJsonObject(source.enabledPlugins);
+    const marketplaces = asJsonObject(source.extraKnownMarketplaces);
+    const carriedPlugins: { [key: string]: JsonValue } = {};
+    const carriedMarketplaces: { [key: string]: JsonValue } = {};
+    for (const name of [...options.includedPlugins].sort()) {
+      if (enabled === null || enabled[name] !== true) continue;
+      carriedPlugins[name] = true;
+      const marketplaceName = name.split("@")[1];
+      if (marketplaceName !== undefined && marketplaces !== null && marketplaceName in marketplaces) {
+        carriedMarketplaces[marketplaceName] = marketplaces[marketplaceName] as JsonValue;
+      }
+    }
+    if (Object.keys(carriedPlugins).length > 0) portable.enabledPlugins = carriedPlugins;
+    if (Object.keys(carriedMarketplaces).length > 0) portable.extraKnownMarketplaces = carriedMarketplaces;
   }
 
   if (Object.keys(portable).length === 0) return null;
   const ordered = Object.fromEntries(Object.entries(portable).sort(([a], [b]) => (a < b ? -1 : 1)));
   return Buffer.from(`${JSON.stringify(ordered, null, 2)}\n`, "utf8");
+}
+
+function asJsonObject(value: JsonValue | undefined): { [key: string]: JsonValue } | null {
+  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) return null;
+  return value;
 }

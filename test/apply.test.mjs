@@ -227,27 +227,27 @@ test("a manifest with ancestor-descendant paths is refused whole", () => {
     tool: "agent-sync",
     agent: "claude-code",
     files: [
-      { path: "a", sha256: sha256Hex(a), size: a.length },
-      { path: "a/b", sha256: sha256Hex(b), size: b.length },
+      { path: "skills/a", sha256: sha256Hex(a), size: a.length },
+      { path: "skills/a/b", sha256: sha256Hex(b), size: b.length },
     ],
     mcpServers: [],
     hooks: [],
   };
   const tar = createTar([
     { path: "manifest.json", content: Buffer.from(JSON.stringify(manifest)) },
-    { path: "files/a", content: a },
-    { path: "files/a/b", content: b },
+    { path: "files/skills/a", content: a },
+    { path: "files/skills/a/b", content: b },
   ]);
   assert.throws(() => loadBundleFromBuffer(tar), /both a file and a parent/);
 });
 
 test("duplicate manifest paths are refused", () => {
   const a = Buffer.from("payload");
-  const entry = { path: "a.md", sha256: sha256Hex(a), size: a.length };
+  const entry = { path: "agents/a.md", sha256: sha256Hex(a), size: a.length };
   const manifest = { schemaVersion: 1, tool: "agent-sync", agent: "claude-code", files: [entry, { ...entry }], mcpServers: [], hooks: [] };
   const tar = createTar([
     { path: "manifest.json", content: Buffer.from(JSON.stringify(manifest)) },
-    { path: "files/a.md", content: a },
+    { path: "files/agents/a.md", content: a },
   ]);
   assert.throws(() => loadBundleFromBuffer(tar), /duplicate manifest path/);
 });
