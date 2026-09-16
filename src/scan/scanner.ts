@@ -249,7 +249,7 @@ function scanSettingsFile(path: string, scope: Scope, items: ScanItem[], diagnos
 }
 
 // Digs the first "command" string out of a hook/statusLine config for display.
-function commandSummary(values: (JsonValue | undefined)[]): string | null {
+export function commandSummary(values: (JsonValue | undefined)[]): string | null {
   for (const value of values) {
     if (value === undefined || value === null) continue;
     if (typeof value === "string") return truncateDetail(value);

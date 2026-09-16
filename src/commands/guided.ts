@@ -1,9 +1,20 @@
 import { writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import type { CommandIo, ExitCode } from "../main.js";
 import { collectExport, skipToken, type ExportPlan } from "../export/collect.js";
-import { scanClaudeCode } from "../scan/scanner.js";
+import {
+  assertPortableSettings,
+  executeApply,
+  gateSettingsHooks,
+  gateSettingsPlugins,
+  planApply,
+} from "../apply/apply.js";
+import type { LoadedBundle } from "../apply/bundle.js";
+import { planMcpRegistrations, runMcpRegistration, type McpRegistration } from "../apply/mcp.js";
+import type { JsonValue } from "../scan/classify.js";
+import { commandSummary, scanClaudeCode } from "../scan/scanner.js";
 import { scanCodex } from "../scan/codex.js";
 import { scanOpencode } from "../scan/opencode.js";
 import type { ScanItem, ScanReport } from "../scan/types.js";
@@ -41,6 +52,7 @@ interface Selections {
   skips: string[];
   plugins: string[];
   hooks: string[];
+  allowSecrets?: string[];
   dest: string;
 }
 
@@ -51,6 +63,7 @@ export function flagEcho(selections: Selections): string {
   for (const skip of [...selections.skips].sort()) parts.push("--skip", quote(skip));
   for (const plugin of [...selections.plugins].sort()) parts.push("--plugin", quote(plugin));
   for (const hook of [...selections.hooks].sort()) parts.push("--hook", quote(hook));
+  for (const path of [...(selections.allowSecrets ?? [])].sort()) parts.push("--allow-secret", quote(path));
   return parts.join(" ");
 }
 
@@ -172,7 +185,7 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
 
   const ui = mode === "picker" ? pickerUi(overrides) : plainUi(io, overrides);
   try {
-    ui.intro(factsLines(reports));
+    ui.intro("agent-sync", "guided export", factsLines(reports));
 
     const travel = await ui.groupMultiselect("What should travel?", groups);
     if (travel === null) return 2;
@@ -202,7 +215,30 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
     };
     if (overrides.userDir !== undefined) collectOptions.userDir = overrides.userDir;
     if (overrides.claudeJsonPath !== undefined) collectOptions.claudeJsonPath = overrides.claudeJsonPath;
-    const plan = collectExport(collectOptions);
+    let plan = collectExport(collectOptions);
+
+    // Secret findings become a consent step: refuse-by-default, carried only
+    // after an explicit yes per file. The prompt names file, line and kind —
+    // never the matched content.
+    const allowSecrets: string[] = [];
+    const flaggedPaths = [...new Set(plan.secretFindings.map((finding) => finding.path))];
+    if (flaggedPaths.length > 0) {
+      for (const path of flaggedPaths) {
+        const findings = plan.secretFindings.filter((finding) => finding.path === path);
+        const first = findings[0];
+        if (first === undefined) continue;
+        const where =
+          findings.length === 1
+            ? `line ${first.line}, ${first.kind}`
+            : `line ${first.line}, ${first.kind}, +${findings.length - 1} more`;
+        const consent = await ui.confirm(`${path} looks like it contains a secret (${where}). Carry it anyway?`, false);
+        if (consent === null) return 2;
+        if (consent) allowSecrets.push(path);
+      }
+      if (allowSecrets.length > 0) {
+        plan = collectExport({ ...collectOptions, allowSecrets });
+      }
+    }
 
     if (plan.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
       for (const diagnostic of plan.diagnostics) io.err(`${diagnostic.severity}: ${diagnostic.message}`);
@@ -234,7 +270,7 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
     const destPath = join(overrides.destDir ?? process.cwd(), dest);
     writeDestination(destPath, dest, plan);
 
-    const selections: Selections = { skips, plugins, hooks, dest };
+    const selections: Selections = { skips, plugins, hooks, allowSecrets, dest };
     ui.outro(
       `Packed ${plan.entries.length} files (${formatBytes(totalBytes)}) to ${dest === "agent-sync-bundle" ? "agent-sync-bundle/" : dest}`,
       `Next time, non-interactively: ${flagEcho(selections)}`,
@@ -258,13 +294,165 @@ function formatBytes(total: number): string {
   return `${(total / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+export interface ApplySelections {
+  source: string;
+  target?: string;
+  hooks: string[];
+  plugins: string[];
+  mcp: string[];
+}
+
+export function applyFlagEcho(selections: ApplySelections): string {
+  const parts = ["agent-sync", "apply", quote(selections.source)];
+  if (selections.target !== undefined) parts.push("--target", quote(selections.target));
+  for (const hook of [...selections.hooks].sort()) parts.push("--hook", quote(hook));
+  for (const plugin of [...selections.plugins].sort()) parts.push("--plugin", quote(plugin));
+  for (const server of [...selections.mcp].sort()) parts.push("--mcp", quote(server));
+  return parts.join(" ");
+}
+
+export interface GuidedApplyOverrides {
+  targetDir?: string;
+  explicitTarget?: boolean;
+  screen?: Screen;
+  plain?: Plain;
+  env?: Record<string, string | undefined>;
+  register?: (registration: McpRegistration) => void;
+}
+
+// Frame 4: plan first, consent second, writes last. The flow only collects
+// answers; the writes run through the identical gate → plan → execute path
+// the flags use, so it structurally cannot half-apply.
+export async function runGuidedApply(
+  io: CommandIo,
+  mode: GuidedMode,
+  bundle: LoadedBundle,
+  source: string,
+  overrides: GuidedApplyOverrides = {},
+): Promise<ExitCode> {
+  const targetDir = overrides.targetDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+  assertPortableSettings(bundle);
+
+  const ui = mode === "picker" ? pickerUi(overrides) : plainUi(io, overrides);
+  try {
+    ui.intro("agent-sync apply", `${source} → ${targetDir}`, []);
+
+    const preview = planApply(bundle, targetDir);
+    const changing = preview.actions.filter((action) => action.kind !== "unchanged");
+    const unchanged = preview.actions.length - changing.length;
+    ui.note([
+      `Bundle verified · ${bundle.manifest.files.length} files, every hash checked, nothing written yet`,
+      ...changing.map((action) => {
+        const consentNote = action.path === "settings.json" ? " · final content follows your answers below" : "";
+        return action.kind === "update"
+          ? `update  ${action.path} (backed up first · undo restores it)${consentNote}`
+          : `create  ${action.path}${consentNote}`;
+      }),
+      ...(unchanged > 0 ? [`${unchanged} unchanged`] : []),
+    ]);
+
+    const settings =
+      bundle.files.has("settings.json")
+        ? (JSON.parse(bundle.files.get("settings.json")!.content.toString("utf8")) as Record<string, JsonValue>)
+        : {};
+
+    const confirmedHooks: string[] = [];
+    const hookNames: { name: string; command: string | null }[] = [];
+    if ("statusLine" in settings) {
+      hookNames.push({ name: "settings.statusLine", command: commandSummary([settings.statusLine ?? null]) });
+    }
+    const bundleHooks = settings.hooks;
+    if (bundleHooks !== null && bundleHooks !== undefined && typeof bundleHooks === "object" && !Array.isArray(bundleHooks)) {
+      for (const event of Object.keys(bundleHooks).sort()) {
+        hookNames.push({ name: `hooks.${event}`, command: commandSummary([bundleHooks[event] ?? null]) });
+      }
+    }
+    for (const hook of hookNames) {
+      const consent = await ui.confirm(
+        `Run ${hook.name} on this machine?${hook.command !== null ? ` (${hook.command})` : ""}`,
+        false,
+      );
+      if (consent === null) return 2;
+      if (consent) confirmedHooks.push(hook.name);
+    }
+
+    const confirmedPlugins: string[] = [];
+    const enabledPlugins = settings.enabledPlugins;
+    if (enabledPlugins !== null && enabledPlugins !== undefined && typeof enabledPlugins === "object" && !Array.isArray(enabledPlugins)) {
+      for (const name of Object.keys(enabledPlugins).sort()) {
+        const consent = await ui.confirm(`Enable plugin ${name} (installs marketplace code)?`, false);
+        if (consent === null) return 2;
+        if (consent) confirmedPlugins.push(name);
+      }
+    }
+
+    const requestedMcp: string[] = [];
+    for (const server of bundle.manifest.mcpServers) {
+      if (server.status !== "candidate" || server.url === undefined) continue;
+      let registration: McpRegistration | undefined;
+      try {
+        registration = planMcpRegistrations([server], [server.name])[0];
+      } catch {
+        continue;
+      }
+      if (registration === undefined) continue;
+      const consent = await ui.confirm(
+        `Register MCP server ${server.name}? (claude ${registration.args.join(" ")})`,
+        false,
+      );
+      if (consent === null) return 2;
+      if (consent) requestedMcp.push(server.name);
+    }
+
+    // Assemble done; from here it is exactly the flag path.
+    gateSettingsHooks(bundle, confirmedHooks);
+    gateSettingsPlugins(bundle, confirmedPlugins);
+    const registrations = planMcpRegistrations(bundle.manifest.mcpServers, requestedMcp);
+    const plan = planApply(bundle, targetDir);
+    const creates = plan.actions.filter((action) => action.kind === "create").length;
+    const updates = plan.actions.filter((action) => action.kind === "update").length;
+    executeApply(bundle, targetDir, plan);
+
+    const register = overrides.register ?? runMcpRegistration;
+    let failedRegistrations = 0;
+    const registered: string[] = [];
+    for (const registration of registrations) {
+      try {
+        register(registration);
+        registered.push(registration.name);
+      } catch (error) {
+        failedRegistrations += 1;
+        io.err(`apply: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    const selections: ApplySelections = {
+      source,
+      hooks: confirmedHooks,
+      plugins: confirmedPlugins,
+      mcp: requestedMcp,
+    };
+    if (overrides.explicitTarget === true) selections.target = targetDir;
+    ui.outro(
+      creates + updates === 0
+        ? "Nothing to change; the bundle is already applied."
+        : `Done · ${creates} created, ${updates} updated${registered.length > 0 ? `, ${registered.length} MCP registered` : ""}`,
+      `Same run, scripted: ${applyFlagEcho(selections)}`,
+      "agent-sync undo puts it all back.",
+    );
+    return failedRegistrations > 0 ? 2 : 0;
+  } finally {
+    ui.close();
+  }
+}
+
 // Both modes speak the same five verbs; null means the user cancelled.
 interface GuidedUi {
-  intro(facts: string[]): void;
+  intro(title: string, subtitle: string, facts: string[]): void;
   note(lines: string[]): void;
   groupMultiselect(message: string, groups: MultiGroup<string>[]): Promise<string[] | null>;
   select(message: string, items: typeof DESTINATIONS): Promise<string | null>;
-  confirm(message: string): Promise<boolean | null>;
+  confirm(message: string, initial?: boolean): Promise<boolean | null>;
   outro(...lines: string[]): void;
   close(): void;
 }
@@ -275,10 +463,10 @@ function pickerUi(overrides: GuidedOverrides): GuidedUi {
   const flow: Flow = createFlow(screen, theme);
   let open = false;
   return {
-    intro(facts) {
-      flow.intro("agent-sync", "guided export");
+    intro(title, subtitle, facts) {
+      flow.intro(title, subtitle);
       open = true;
-      flow.note(facts);
+      if (facts.length > 0) flow.note(facts);
     },
     note(lines) {
       flow.note(lines);
@@ -293,8 +481,8 @@ function pickerUi(overrides: GuidedOverrides): GuidedUi {
       if (result.cancelled) open = false;
       return result.cancelled ? null : result.value;
     },
-    async confirm(message) {
-      const result = await flow.confirm(message);
+    async confirm(message, initial = true) {
+      const result = await flow.confirm(message, initial);
       if (result.cancelled) open = false;
       return result.cancelled ? null : result.value;
     },
@@ -315,8 +503,8 @@ function pickerUi(overrides: GuidedOverrides): GuidedUi {
 function plainUi(io: CommandIo, overrides: GuidedOverrides): GuidedUi {
   const plain = overrides.plain ?? new Plain();
   return {
-    intro(facts) {
-      plain.say("agent-sync (plain mode)");
+    intro(title, subtitle, facts) {
+      plain.say(`${title} — ${subtitle} (plain mode)`);
       for (const fact of facts) plain.say(fact);
       plain.say("");
     },
@@ -333,8 +521,8 @@ function plainUi(io: CommandIo, overrides: GuidedOverrides): GuidedUi {
       if (result.cancelled) io.err("Cancelled. Nothing was written.");
       return result.cancelled ? null : result.value;
     },
-    async confirm(message) {
-      const result = await plain.confirm(message, true);
+    async confirm(message, initial = true) {
+      const result = await plain.confirm(message, initial);
       if (result.cancelled) io.err("Cancelled. Nothing was written.");
       return result.cancelled ? null : result.value;
     },

@@ -15,6 +15,7 @@ const HELP = [
   "  --hook <name>    Include one confirmed hook (repeatable), e.g. --hook hooks.PostToolUse",
   "  --plugin <name>  Include one plugin reference (repeatable), e.g. --plugin ponytail@ponytail",
   "  --skip <item>    Leave one scanned item behind (repeatable), e.g. --skip skill/boxd-cli or --skip settings",
+  "  --allow-secret <path>  Carry a file despite a secret-content finding (repeatable, refuse-by-default)",
   "  --dry-run        Print exactly what would be packed and write nothing",
   "  --json           Print the manifest as JSON instead of the summary",
   "  --help           Show help",
@@ -28,6 +29,7 @@ export const exportCommand: CommandDef = {
     hook: { type: "string", description: "Include one confirmed hook (repeatable)", multiple: true },
     plugin: { type: "string", description: "Include one plugin reference (repeatable)", multiple: true },
     skip: { type: "string", description: "Leave one scanned item behind (repeatable)", multiple: true },
+    "allow-secret": { type: "string", description: "Carry a file despite a secret-content finding (repeatable)", multiple: true },
     "dry-run": { type: "boolean", description: "Print the packing list and write nothing" },
     json: { type: "boolean", description: "Print the manifest as JSON" },
   },
@@ -46,8 +48,9 @@ export const exportCommand: CommandDef = {
     const confirmedHooks = stringList(values.hook);
     const selectedPlugins = stringList(values.plugin);
     const skips = stringList(values.skip);
+    const allowSecrets = stringList(values["allow-secret"]);
 
-    const plan = collectExport({ confirmedHooks, selectedPlugins, skips });
+    const plan = collectExport({ confirmedHooks, selectedPlugins, skips, allowSecrets });
 
     if (plan.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
       for (const diagnostic of plan.diagnostics) io.err(`${diagnostic.severity}: ${diagnostic.message}`);
@@ -68,7 +71,7 @@ export const exportCommand: CommandDef = {
     if (values.json) {
       summarize(
         JSON.stringify(
-          { manifest: plan.manifest, skipped: plan.skipped, diagnostics: plan.diagnostics },
+          { manifest: plan.manifest, skipped: plan.skipped, secretFindings: plan.secretFindings, diagnostics: plan.diagnostics },
           null,
           2,
         ),

@@ -6,6 +6,7 @@ import { loadBundleFromBuffer, loadBundleFromDirectory, type LoadedBundle } from
 import { assertPortableSettings, executeApply, gateSettingsHooks, gateSettingsPlugins, planApply } from "../apply/apply.js";
 import { planMcpRegistrations, runMcpRegistration } from "../apply/mcp.js";
 import { stringList } from "./export.js";
+import { chooseEntry, runGuidedApply } from "./guided.js";
 
 const HELP = [
   "Usage: agent-sync apply <bundle> [flags]",
@@ -25,7 +26,13 @@ const HELP = [
   "  --plugin <name>  Re-confirm one plugin reference from the bundle (repeatable)",
   "  --mcp <name>     Register one portable MCP server via `claude mcp add` (repeatable, name + URL only)",
   "  --dry-run        Print what would change and write nothing",
+  "  --plain          Guided apply with plain sequential prompts (no cursor UI)",
+  "  --no-input       Never prompt; use the static flag surface",
   "  --help           Show help",
+  "",
+  "Run `agent-sync apply <bundle>` bare in a terminal for the guided apply:",
+  "verified plan first, per-hook and per-plugin consent, MCP registration",
+  "showing the exact command, writes last.",
 ].join("\n");
 
 export const applyCommand: CommandDef = {
@@ -38,6 +45,8 @@ export const applyCommand: CommandDef = {
     plugin: { type: "string", description: "Re-confirm one plugin reference from the bundle (repeatable)", multiple: true },
     mcp: { type: "string", description: "Register one portable MCP server from the manifest (repeatable)", multiple: true },
     "dry-run": { type: "boolean", description: "Print what would change and write nothing" },
+    plain: { type: "boolean", description: "Guided apply with plain sequential prompts (no cursor UI)" },
+    "no-input": { type: "boolean", description: "Never prompt; use the static flag surface" },
   },
   async run({ positionals, values, io }): Promise<ExitCode> {
     const source = positionals[0];
@@ -53,6 +62,35 @@ export const applyCommand: CommandDef = {
     const confirmedHooks = stringList(values.hook);
     const confirmedPlugins = stringList(values.plugin);
     const requestedMcp = stringList(values.mcp);
+    const dryRun = values["dry-run"] === true;
+
+    // Any consent or mode flag keeps the exact static surface; only a bare
+    // `apply <bundle>` on TTYs outside CI goes interactive (frame 4). A "-"
+    // source is always static: stdin IS the bundle, so there is nothing left
+    // to read consent from.
+    const anyStaticFlag =
+      confirmedHooks.length > 0 ||
+      confirmedPlugins.length > 0 ||
+      requestedMcp.length > 0 ||
+      dryRun ||
+      source === "-";
+    const mode = anyStaticFlag
+      ? "static"
+      : chooseEntry({
+          help: false,
+          version: false,
+          plain: values.plain === true,
+          noInput: values["no-input"] === true,
+          stdinTTY: process.stdin.isTTY === true,
+          stdoutTTY: process.stdout.isTTY === true,
+          env: process.env,
+        });
+    if (mode !== "static") {
+      const interactiveBundle = await loadBundle(source);
+      const overrides: Parameters<typeof runGuidedApply>[4] =
+        typeof values.target === "string" ? { targetDir: values.target, explicitTarget: true } : {};
+      return runGuidedApply(io, mode, interactiveBundle, source, overrides);
+    }
 
     const bundle = await loadBundle(source);
     // The allowlist runs before either consent gate: an unknown settings key
@@ -73,7 +111,6 @@ export const applyCommand: CommandDef = {
 
     const creates = plan.actions.filter((action) => action.kind === "create");
     const updates = plan.actions.filter((action) => action.kind === "update");
-    const dryRun = values["dry-run"] === true;
 
     if (plan.previousMarker !== null && plan.addedSinceLast.length > 0) {
       io.out(

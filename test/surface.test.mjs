@@ -14,8 +14,8 @@ test("public surface is frozen", () => {
   assert.deepEqual(Object.keys(GLOBAL_FLAGS).sort(), ["help", "version"]);
   assert.deepEqual(ALL_COMMANDS.map((command) => command.word), ["scan", "export", "apply", "undo"]);
   assert.deepEqual(Object.keys(ALL_COMMANDS[0].flags).sort(), ["json", "no-project", "project"]);
-  assert.deepEqual(Object.keys(ALL_COMMANDS[1].flags).sort(), ["dry-run", "hook", "json", "plugin", "skip"]);
-  assert.deepEqual(Object.keys(ALL_COMMANDS[2].flags).sort(), ["dry-run", "hook", "mcp", "plugin", "target"]);
+  assert.deepEqual(Object.keys(ALL_COMMANDS[1].flags).sort(), ["allow-secret", "dry-run", "hook", "json", "plugin", "skip"]);
+  assert.deepEqual(Object.keys(ALL_COMMANDS[2].flags).sort(), ["dry-run", "hook", "mcp", "no-input", "plain", "plugin", "target"]);
   assert.deepEqual(Object.keys(ALL_COMMANDS[3].flags).sort(), ["target"]);
 });
 
