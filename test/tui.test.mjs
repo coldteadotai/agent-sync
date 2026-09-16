@@ -299,6 +299,16 @@ test("filtered bulk operations touch only visible items", () => {
   assert.equal(zero.selected.size, 0, "invert with zero matches is a no-op");
 });
 
+test("while filtering, v and ? type into the query instead of toggling views", () => {
+  const state = buildMultiState("pick", GROUPS);
+  reduceMulti(state, press("/"));
+  reduceMulti(state, press("v"));
+  reduceMulti(state, press("?"));
+  assert.equal(state.query, "v?");
+  assert.equal(state.lockedExpanded, false);
+  assert.equal(state.helpExpanded, false);
+});
+
 test("group headers survive filtering, and the filter line shows the match count", () => {
   const theme = asciiTheme();
   const state = buildMultiState("pick", GROUPS);

@@ -438,6 +438,41 @@ test("the review tree aggregates skill dirs, names config keys, and accounts for
   assert.match(text, /hooks: hooks\.PostToolUse \| plugins: none \| 5 excluded items stayed behind/);
 });
 
+test("the review tree never prints TOML values, section headers, or array elements", async () => {
+  const { buildReviewLines } = await import("../dist/main.js");
+  const toml = [
+    'model = "gpt"',
+    "[mcp_servers.secretsvc]",
+    'command = "npx"',
+    "args = [",
+    '  "--token",',
+    '  "sk-live-planted-value-123",',
+    "]",
+  ].join("\n");
+  const plan = {
+    entries: [{ path: "codex/config.toml", content: Buffer.from(toml), executable: false }],
+    manifest: {},
+    skipped: [],
+    secretFindings: [],
+    diagnostics: [],
+  };
+  const text = buildReviewLines(plan, [], [], 0).join("\n");
+  assert.ok(!text.includes("sk-live-planted-value-123"), "a TOML value reached the review screen");
+  assert.ok(!text.includes("secretsvc"), "a TOML section header reached the review screen");
+  assert.ok(!text.includes("]"), "array structure reached the review screen");
+  assert.match(text, /config\.toml\s+args, command, model/);
+});
+
+test("a tall review tree yields to keep the prompt on screen", async () => {
+  const { fitReviewLines } = await import("../dist/main.js");
+  const lines = [...Array.from({ length: 30 }, (_, i) => `file-${i}`), "", "hooks: none | plugins: none | 0 excluded items stayed behind"];
+  const fitted = fitReviewLines(lines, 12);
+  assert.equal(fitted.length, 12);
+  assert.equal(fitted[fitted.length - 1], "hooks: none | plugins: none | 0 excluded items stayed behind");
+  assert.match(fitted[fitted.length - 3], /\.\.\. \d+ more/);
+  assert.deepEqual(fitReviewLines(["a", "b"], 12), ["a", "b"], "short trees pass through untouched");
+});
+
 test("review keys: n leaves nothing written, d changes the destination", async () => {
   const destDir = join(root, "review-keys-out");
   mkdirSync(destDir, { recursive: true });

@@ -245,7 +245,7 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
       const picked = await ui.groupMultiselect(
         "Which hooks may travel?",
         [hookGroup],
-        "hooks run shell commands on the target; none travel unless you pick them",
+        "hooks run shell commands on the target \u00b7 none travel unless you pick them",
       );
       if (picked === null) return 2;
       hooks = picked;
@@ -304,7 +304,10 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
       const choice = await ui.review(buildReviewLines(plan, hooks, plugins, report.excluded.length), destLabel(dest));
       if (choice === null) return 2;
       if (choice === "skip") {
-        ui.outro("Nothing was written.");
+        ui.outro(
+          "Nothing was written.",
+          `To pack a different way, scripted: ${flagEcho({ skips, plugins, hooks, allowSecrets, dest })}`,
+        );
         return 0;
       }
       if (choice === "dest") {
@@ -335,6 +338,18 @@ function destLabel(dest: string): string {
   return dest === "agent-sync-bundle" ? "agent-sync-bundle/" : dest;
 }
 
+// The review screen must never scroll its own prompt away: renderLive slices
+// top-first, so a tree taller than the terminal would cut "Pack it?". The
+// tree yields instead — head lines, an elision count, and always the closing
+// consent-accounting line.
+export function fitReviewLines(lines: string[], budget: number): string[] {
+  if (lines.length <= budget || budget < 4) return lines.slice(0, Math.max(budget, 4));
+  const tail = lines.slice(-2);
+  const head = lines.slice(0, budget - 3);
+  const elided = lines.length - head.length - tail.length;
+  return [...head, `... ${elided} more`, ...tail];
+}
+
 // The bundle as a readable tree: skill directories aggregate to a count and
 // size, config files name the keys they carry, and the closing line accounts
 // for consents and exclusions, so the screen is the manifest in prose.
@@ -351,13 +366,16 @@ export function buildReviewLines(
     if (name === "CLAUDE.md" || name === "AGENTS.md") return "memory";
     if (name.endsWith(".json") || name.endsWith(".toml")) {
       try {
+        // TOML lines must look like a bare-key assignment to count as a key:
+        // anything else (section headers, multi-line array elements, closing
+        // brackets) is CONTENT and must never reach the screen.
         const keys =
           name.endsWith(".json")
             ? Object.keys(JSON.parse(content.toString("utf8")) as Record<string, unknown>)
             : content
                 .toString("utf8")
                 .split("\n")
-                .map((line) => line.split("=")[0]?.trim() ?? "")
+                .map((line) => /^\s*([A-Za-z0-9_.-]+)\s*=/.exec(line)?.[1] ?? "")
                 .filter((key) => key.length > 0);
         if (keys.length > 0) return keys.sort().join(", ");
       } catch {
@@ -633,12 +651,15 @@ function pickerUi(overrides: GuidedOverrides & { wordmark?: boolean }): GuidedUi
   const g = theme.glyphs;
   const bar = theme.paint("accent", g.bar);
   let open = false;
+  // Prose from the flow layer spells separators as the unicode mid-dot; the
+  // UI owns rendering, so it swaps in the theme separator (ascii "-").
+  const fmt = (text: string): string => text.replaceAll("\u00b7", g.sep);
   return {
     intro(title, subtitle, facts) {
       if (overrides.wordmark === true) {
         screen.open();
         open = true;
-        screen.commit(["", ...wordmarkLines(theme, screen.columns), theme.paint("dim", subtitle), ""]);
+        screen.commit(["", ...wordmarkLines(theme, screen.columns), theme.paint("dim", fmt(subtitle)), ""]);
         flow.intro(title);
       } else {
         flow.intro(title, subtitle);
@@ -651,7 +672,7 @@ function pickerUi(overrides: GuidedOverrides & { wordmark?: boolean }): GuidedUi
     },
     async groupMultiselect(message, groups, coach) {
       const options: { coach?: string } = {};
-      if (coach !== undefined) options.coach = coach;
+      if (coach !== undefined) options.coach = fmt(coach);
       const result = await flow.groupMultiselect(message, groups, options);
       if (result.cancelled) open = false;
       return result.cancelled ? null : result.value;
@@ -672,10 +693,11 @@ function pickerUi(overrides: GuidedOverrides & { wordmark?: boolean }): GuidedUi
     async review(lines, dest) {
       const message = "This is what leaves the machine";
       for (;;) {
+        const fitted = fitReviewLines(lines, Math.max(4, screen.rows - 6));
         screen.renderLive([
           `${theme.paint("accent", g.stepActive)}  ${theme.paint("bright", message)}`,
           bar,
-          ...lines.map((line) => `${bar}  ${line.length > 0 ? line : ""}`),
+          ...fitted.map((line) => `${bar}  ${line.length > 0 ? line : ""}`),
           bar,
           `${bar}  ${theme.paint("bright", "Pack it?")}  ${theme.paint("ok", dest)}  ${theme.paint("dim", "(y / n / d changes destination)")}`,
           `${theme.paint("accent", g.railEnd)}  ${theme.paint("dim", ["y pack", "d destination", "esc cancel"].join(` ${g.sep} `))}`,
@@ -726,9 +748,10 @@ function pickerUi(overrides: GuidedOverrides & { wordmark?: boolean }): GuidedUi
 
 function plainUi(io: CommandIo, overrides: GuidedOverrides): GuidedUi {
   const plain = overrides.plain ?? new Plain();
+  const fmt = (text: string): string => text.replaceAll("\u00b7", "-");
   return {
     intro(title, subtitle, facts) {
-      plain.say(`${title} — ${subtitle} (plain mode)`);
+      plain.say(`${title} - ${fmt(subtitle)} (plain mode)`);
       for (const fact of facts) plain.say(fact);
       plain.say("");
     },
@@ -736,7 +759,7 @@ function plainUi(io: CommandIo, overrides: GuidedOverrides): GuidedUi {
       for (const line of lines) plain.say(line);
     },
     async groupMultiselect(message, groups, coach) {
-      if (coach !== undefined) plain.say(coach);
+      if (coach !== undefined) plain.say(fmt(coach));
       const result = await plain.groupMultiselect(message, groups);
       if (result.cancelled) io.err("Cancelled. Nothing was written.");
       return result.cancelled ? null : result.value;
@@ -753,7 +776,7 @@ function plainUi(io: CommandIo, overrides: GuidedOverrides): GuidedUi {
     },
     // Plain mode reads the same tree and answers one y/N; changing the
     // destination in plain mode is the scripted flags' job, which the echo
-    // teaches at the end of every run.
+    // teaches on pack and on skip alike.
     async review(lines, dest) {
       plain.say("This is what leaves the machine:");
       for (const line of lines) plain.say(line);
