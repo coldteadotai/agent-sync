@@ -1,10 +1,11 @@
 name: release
 
-# The release path: a pushed v* tag publishes via npm Trusted Publishing
-# (OIDC, needs npm >= 11.5.1) with provenance attestation. No long-lived npm
-# token exists anywhere; until the Trusted Publisher is configured on the
-# npm side, a pushed tag fails closed at authentication because the publish
-# step carries no credentials at all.
+# Dormant by choice: releases are currently published manually by the
+# maintainer, and no automation token capable of publishing this package
+# exists. This workflow becomes the release path once npm Trusted Publishing
+# is configured for the package and the publish step below is switched to
+# OIDC (needs npm >= 11.5.1). Until then a pushed tag fails closed at
+# authentication: the publish step carries no credentials at all.
 on:
   push:
     tags: ["v*"]
@@ -41,8 +42,6 @@ jobs:
             fi
           done < <(git ls-files -- src bin test build.mjs .github)
           exit "$bad"
-      - name: npm with OIDC trusted publishing support
-        run: npm install -g npm@^11.5.1
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
