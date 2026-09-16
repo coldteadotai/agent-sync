@@ -9,9 +9,13 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import type { Manifest } from "../export/collect.js";
 import { PORTABLE_SETTINGS_KEYS } from "../scan/scanner.js";
+import { CODEX_PORTABLE_SETTINGS_KEYS } from "../scan/codex.js";
+import { OPENCODE_PORTABLE_SETTINGS_KEYS } from "../scan/opencode.js";
+import { parseToml } from "../scan/toml.js";
 import type { LoadedBundle } from "./bundle.js";
 
 const STATE_DIR = ".agent-sync";
@@ -167,6 +171,7 @@ const RECEIVABLE_SETTINGS_KEYS = new Set<string>([
 ]);
 
 export function assertPortableSettings(bundle: LoadedBundle): void {
+  assertNamespacedSettings(bundle);
   const entry = bundle.files.get("settings.json");
   if (entry === undefined) return;
   const settings = readBundleSettings(entry.content);
@@ -194,15 +199,45 @@ export function assertPortableSettings(bundle: LoadedBundle): void {
   }
 }
 
-function readBundleSettings(content: Buffer): Record<string, unknown> {
+// The codex and opencode config files carry portable preference keys only —
+// there is no consent-gated content in them, so any other key refuses whole.
+function assertNamespacedSettings(bundle: LoadedBundle): void {
+  const codex = bundle.files.get("codex/config.toml");
+  if (codex !== undefined) {
+    let config: Record<string, unknown>;
+    try {
+      config = parseToml(codex.content.toString("utf8"));
+    } catch {
+      throw new Error("Refusing bundle: codex/config.toml is not parseable TOML. Nothing was written.");
+    }
+    const allowed = new Set<string>(CODEX_PORTABLE_SETTINGS_KEYS);
+    for (const key of Object.keys(config)) {
+      if (!allowed.has(key)) {
+        throw new Error(`Refusing bundle: codex/config.toml carries "${key}", which agent-sync never exports. Nothing was written.`);
+      }
+    }
+  }
+  const opencode = bundle.files.get("opencode/opencode.json");
+  if (opencode !== undefined) {
+    const config = readBundleSettings(opencode.content, "opencode/opencode.json");
+    const allowed = new Set<string>(OPENCODE_PORTABLE_SETTINGS_KEYS);
+    for (const key of Object.keys(config)) {
+      if (!allowed.has(key)) {
+        throw new Error(`Refusing bundle: opencode/opencode.json carries "${key}", which agent-sync never exports. Nothing was written.`);
+      }
+    }
+  }
+}
+
+function readBundleSettings(content: Buffer, label = "settings.json"): Record<string, unknown> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(content.toString("utf8"));
   } catch {
-    throw new Error("Refusing bundle: settings.json is not valid JSON.");
+    throw new Error(`Refusing bundle: ${label} is not valid JSON.`);
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Refusing bundle: settings.json is not an object.");
+    throw new Error(`Refusing bundle: ${label} is not an object.`);
   }
   return parsed as Record<string, unknown>;
 }
@@ -371,6 +406,89 @@ function writeMarker(targetDir: string, marker: Marker): void {
   const markerPath = resolveForWrite(targetDir, `${STATE_DIR}/last-applied.json`);
   mkdirSync(dirname(markerPath), { recursive: true });
   writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
+}
+
+// The per-agent target roots the tool owns. Codex splits across two real
+// roots (its home and the shared ~/.agents skills dir); OpenCode lives under
+// XDG config. The claude root keeps honoring --target and CLAUDE_CONFIG_DIR.
+export interface AgentRoots {
+  claude: string;
+  codexHome: string;
+  codexAgents: string;
+  opencodeConfig: string;
+}
+
+export function defaultAgentRoots(
+  claudeTarget?: string,
+  env: Record<string, string | undefined> = process.env,
+): AgentRoots {
+  return {
+    claude: claudeTarget ?? env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
+    codexHome: env.CODEX_HOME ?? join(homedir(), ".codex"),
+    codexAgents: join(homedir(), ".agents"),
+    opencodeConfig: join(env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "opencode"),
+  };
+}
+
+export interface RootSlice {
+  root: string;
+  agent: "claude-code" | "codex" | "opencode";
+  bundle: LoadedBundle;
+}
+
+// Splits a bundle into per-root sub-bundles with rebased paths, so the
+// existing plan/execute/undo machinery — markers, backups, write policy and
+// symlink containment included — runs unchanged per root.
+export function splitBundleByRoot(bundle: LoadedBundle, roots: AgentRoots): RootSlice[] {
+  // Keyed by the RESOLVED root path: two logical roots pointing at the same
+  // directory (CODEX_HOME aimed at the claude target, spelling variants)
+  // merge into one slice, so that directory gets one apply and one marker
+  // instead of the second marker orphaning the first slice's files.
+  const slices = new Map<string, RootSlice>();
+  const place = (root: string, agent: RootSlice["agent"], rebased: string, path: string): void => {
+    const key = resolve(root);
+    let slice = slices.get(key);
+    if (slice === undefined) {
+      slice = {
+        root,
+        agent,
+        // Non-claude slices carry only their own files: a codex marker
+        // claiming claude's hooks or plugins would mislead anyone reading it.
+        bundle: {
+          manifest:
+            agent === "claude-code"
+              ? { ...bundle.manifest, files: [] }
+              : {
+                  schemaVersion: bundle.manifest.schemaVersion,
+                  tool: bundle.manifest.tool,
+                  agent: bundle.manifest.agent,
+                  files: [],
+                  mcpServers: [],
+                  hooks: [],
+                },
+          files: new Map(),
+        },
+      };
+      slices.set(key, slice);
+    }
+    const payload = bundle.files.get(path);
+    if (payload === undefined) return;
+    slice.bundle.files.set(rebased, payload);
+    const manifestFile = bundle.manifest.files.find((file) => file.path === path);
+    if (manifestFile !== undefined) slice.bundle.manifest.files.push({ ...manifestFile, path: rebased });
+  };
+
+  for (const path of [...bundle.files.keys()].sort()) {
+    if (path.startsWith("codex/skills/")) place(roots.codexAgents, "codex", path.slice("codex/".length), path);
+    else if (path.startsWith("codex/")) place(roots.codexHome, "codex", path.slice("codex/".length), path);
+    else if (path.startsWith("opencode/")) place(roots.opencodeConfig, "opencode", path.slice("opencode/".length), path);
+    else place(roots.claude, "claude-code", path, path);
+  }
+
+  const order: RootSlice["agent"][] = ["claude-code", "codex", "opencode"];
+  return [...slices.values()].sort(
+    (a, b) => order.indexOf(a.agent) - order.indexOf(b.agent) || (a.root < b.root ? -1 : 1),
+  );
 }
 
 // Defense in depth behind the manifest path validation: the joined destination

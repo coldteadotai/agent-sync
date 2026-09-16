@@ -147,7 +147,7 @@ function parseManifest(bytes: Buffer): Manifest {
     }
   }
 
-  return {
+  const result: Manifest = {
     schemaVersion: manifest.schemaVersion,
     tool: "agent-sync",
     agent: "claude-code",
@@ -155,6 +155,11 @@ function parseManifest(bytes: Buffer): Manifest {
     mcpServers: Array.isArray(manifest.mcpServers) ? manifest.mcpServers : [],
     hooks: Array.isArray(manifest.hooks) ? manifest.hooks : [],
   };
+  const agents = (manifest as { agents?: unknown }).agents;
+  if (Array.isArray(agents)) {
+    result.agents = agents.filter((agent): agent is string => typeof agent === "string");
+  }
+  return result;
 }
 
 // The target-path policy is an allowlist of exactly what export can produce.
@@ -166,16 +171,22 @@ function parseManifest(bytes: Buffer): Manifest {
 // case-insensitive filesystems.
 const WRITABLE_ROOT_FILES = ["CLAUDE.md", "settings.json"];
 const WRITABLE_ROOT_DIRS = ["skills", "agents", "commands"];
+const WRITABLE_CODEX_FILES = ["codex/AGENTS.md", "codex/config.toml"];
+const WRITABLE_OPENCODE_FILES = ["opencode/opencode.json"];
 
 export function assertWritablePath(path: string): void {
   const components = path.split("/");
   const root = components[0] ?? "";
   const allowed =
     (components.length === 1 && WRITABLE_ROOT_FILES.includes(root)) ||
-    (components.length > 1 && WRITABLE_ROOT_DIRS.includes(root));
+    (components.length > 1 && WRITABLE_ROOT_DIRS.includes(root)) ||
+    WRITABLE_CODEX_FILES.includes(path) ||
+    WRITABLE_OPENCODE_FILES.includes(path) ||
+    (root === "codex" && components[1] === "skills" && components.length > 2) ||
+    (root === "opencode" && components[1] === "commands" && components.length > 2);
   if (!allowed) {
     throw new Error(
-      `Refusing bundle: ${path} is not a path agent-sync exports (CLAUDE.md, settings.json, skills/, agents/, commands/). Nothing was written.`,
+      `Refusing bundle: ${path} is not a path agent-sync exports (CLAUDE.md, settings.json, skills/, agents/, commands/, codex/, opencode/). Nothing was written.`,
     );
   }
   for (const component of components) {

@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { collectExport } from "../dist/main.js";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const fakeHome = mkdtempSync(join(tmpdir(), "agent-sync-fakehome-"));
 
 const PLANTED = {
   envFile: "planted-dotenv-secret",
@@ -31,7 +32,7 @@ function runCli(args) {
   return execFileSync(process.execPath, ["bin/agent-sync.mjs", ...args], {
     cwd: REPO_ROOT,
     encoding: "buffer",
-    env: { ...process.env, CLAUDE_CONFIG_DIR: userDir },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: userDir, HOME: fakeHome, USERPROFILE: fakeHome, CODEX_HOME: join(fakeHome, ".codex"), XDG_CONFIG_HOME: join(fakeHome, ".config"), XDG_DATA_HOME: join(fakeHome, ".local", "share") },
   });
 }
 
@@ -84,6 +85,9 @@ function plan(confirmedHooks = []) {
   return collectExport({
     userDir,
     claudeJsonPath: join(userDir, ".claude.json"),
+    codexHome: join(fakeHome, ".codex"),
+    codexAgentsDir: join(fakeHome, ".agents"),
+    opencodeConfigDir: join(fakeHome, ".config", "opencode"),
     confirmedHooks,
   });
 }
@@ -244,7 +248,7 @@ test("a manifest-only bundle is legal when only MCP metadata exists", () => {
     const dest = join(altRoot, "bundle");
     execFileSync(process.execPath, ["bin/agent-sync.mjs", "export", dest], {
       cwd: REPO_ROOT,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: altUser },
+      env: { ...process.env, CLAUDE_CONFIG_DIR: altUser, HOME: fakeHome, USERPROFILE: fakeHome, CODEX_HOME: join(fakeHome, ".codex"), XDG_CONFIG_HOME: join(fakeHome, ".config"), XDG_DATA_HOME: join(fakeHome, ".local", "share") },
     });
     const manifest = JSON.parse(readFileSync(join(dest, "manifest.json"), "utf8"));
     assert.equal(manifest.files.length, 0);

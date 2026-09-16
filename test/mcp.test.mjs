@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { classifyMcpServer, collectExport, planMcpRegistrations, sanitizeRemoteEndpoint } from "../dist/main.js";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const fakeHome = mkdtempSync(join(tmpdir(), "agent-sync-fakehome-"));
 const BIN = join(REPO_ROOT, "bin", "agent-sync.mjs");
 
 let root;
@@ -22,6 +23,11 @@ function runCli(args) {
     encoding: "utf8",
     env: {
       ...process.env,
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      CODEX_HOME: join(fakeHome, ".codex"),
+      XDG_CONFIG_HOME: join(fakeHome, ".config"),
+      XDG_DATA_HOME: join(fakeHome, ".local", "share"),
       CLAUDE_CONFIG_DIR: sourceDir,
       PATH: `${shimDir}:${process.env.PATH}`,
       CLAUDE_SHIM_LOG: shimLog,
@@ -74,7 +80,7 @@ test("classification exposes only clean urls", () => {
 });
 
 test("manifest carries urls for portable servers only", () => {
-  const plan = collectExport({ userDir: sourceDir, claudeJsonPath: join(sourceDir, ".claude.json") });
+  const plan = collectExport({ userDir: sourceDir, claudeJsonPath: join(sourceDir, ".claude.json"), codexHome: join(fakeHome, ".codex"), codexAgentsDir: join(fakeHome, ".agents"), opencodeConfigDir: join(fakeHome, ".config", "opencode") });
   const byName = new Map(plan.manifest.mcpServers.map((server) => [server.name, server]));
   assert.equal(byName.get("linear").url, "https://mcp.linear.app/mcp");
   assert.equal(byName.get("events").transport, "sse");
@@ -223,7 +229,7 @@ test("one failed registration does not stop the rest and exits 2", () => {
       {
         cwd: REPO_ROOT,
         encoding: "utf8",
-        env: { ...process.env, CLAUDE_CONFIG_DIR: sourceDir, PATH: `${failShimDir}:${process.env.PATH}`, CLAUDE_SHIM_LOG: failLog },
+        env: { ...process.env, CLAUDE_CONFIG_DIR: sourceDir, HOME: fakeHome, USERPROFILE: fakeHome, CODEX_HOME: join(fakeHome, ".codex"), XDG_CONFIG_HOME: join(fakeHome, ".config"), XDG_DATA_HOME: join(fakeHome, ".local", "share"), PATH: `${failShimDir}:${process.env.PATH}`, CLAUDE_SHIM_LOG: failLog },
       },
     );
     assert.fail("expected exit 2");

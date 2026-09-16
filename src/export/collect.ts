@@ -6,9 +6,17 @@ import { isSensitiveKey, type JsonValue } from "../scan/classify.js";
 import { scanContentForSecrets } from "./secrets.js";
 import { isRepresentableTreePath } from "./tar.js";
 import { PORTABLE_SETTINGS_KEYS, scanClaudeCode } from "../scan/scanner.js";
+import { CODEX_PORTABLE_SETTINGS_KEYS, scanCodex } from "../scan/codex.js";
+import { OPENCODE_PORTABLE_SETTINGS_KEYS, scanOpencode, stripJsonc } from "../scan/opencode.js";
+import { parseToml } from "../scan/toml.js";
 import type { Diagnostic, ScanItem } from "../scan/types.js";
 
-export const MANIFEST_SCHEMA_VERSION = 1;
+// The highest manifest schema this tool reads and writes. A claude-only
+// bundle is written as schema 1 (bit-for-bit the v1 shape); a bundle carrying
+// codex/ or opencode/ namespaced files is schema 2, so a 0.1.x apply refuses
+// it with the clear needs-a-newer-agent-sync message instead of a path error.
+export const MANIFEST_SCHEMA_VERSION = 2;
+export const CLAUDE_ONLY_SCHEMA_VERSION = 1;
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
@@ -57,6 +65,8 @@ export interface Manifest {
   schemaVersion: number;
   tool: "agent-sync";
   agent: "claude-code";
+  // Schema 2: the union of agents contributing files, e.g. ["claude-code","codex"].
+  agents?: string[];
   files: ManifestFile[];
   mcpServers: ManifestMcpServer[];
   hooks: ManifestHook[];
@@ -91,15 +101,22 @@ export interface ExportPlan {
 export interface CollectOptions {
   userDir?: string;
   claudeJsonPath?: string;
+  codexHome?: string;
+  codexAgentsDir?: string;
+  opencodeConfigDir?: string;
   confirmedHooks?: string[];
   selectedPlugins?: string[];
   skips?: string[];
   allowSecrets?: string[];
 }
 
-// The flag spelling of a picker row: "skill/boxd-cli", "memory/CLAUDE.md", "settings".
-export function skipToken(item: Pick<ScanItem, "kind" | "name">): string {
-  return item.kind === "settings" ? "settings" : `${item.kind}/${item.name}`;
+// The flag spelling of a picker row: "skill/boxd-cli", "memory/CLAUDE.md",
+// "settings" for claude-code (the v1 spellings, unchanged), agent-prefixed
+// for the others ("codex/skill/x", "opencode/settings"). The bare agent name
+// ("codex", "opencode") skips that agent whole.
+export function skipToken(item: Pick<ScanItem, "kind" | "name">, agent: "claude-code" | "codex" | "opencode" = "claude-code"): string {
+  const bare = item.kind === "settings" ? "settings" : `${item.kind}/${item.name}`;
+  return agent === "claude-code" ? bare : `${agent}/${bare}`;
 }
 
 export function collectExport(options: CollectOptions = {}): ExportPlan {
@@ -109,9 +126,16 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
   const skips = new Set(options.skips ?? []);
   const allowSecrets = new Set(options.allowSecrets ?? []);
 
+  const codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
+  const codexAgentsDir = options.codexAgentsDir ?? join(homedir(), ".agents");
+  const opencodeConfigDir =
+    options.opencodeConfigDir ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "opencode");
+
   const scanOptions: Parameters<typeof scanClaudeCode>[0] = { userDir, projectDir: null };
   if (options.claudeJsonPath !== undefined) scanOptions.claudeJsonPath = options.claudeJsonPath;
   const report = scanClaudeCode(scanOptions);
+  const codexReport = scanCodex({ codexHome, agentsDir: codexAgentsDir, projectDir: null });
+  const opencodeReport = scanOpencode({ configDir: opencodeConfigDir, projectDir: null });
 
   const entries: BundleEntry[] = [];
   const skipped: { path: string; reason: string }[] = [];
@@ -153,12 +177,22 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
   };
 
   const userItems = report.items.filter((item) => item.scope === "user");
+  const codexItems = codexReport.items.filter((item) => item.scope === "user" && item.status === "candidate");
+  const opencodeItems = opencodeReport.items.filter(
+    (item) => item.scope === "user" && item.status === "candidate" && item.kind !== "mcp_server",
+  );
 
   const skippable = new Set(
     userItems
       .filter((item) => item.status === "candidate" && item.kind !== "mcp_server")
       .map((item) => skipToken(item)),
   );
+  for (const item of codexItems) {
+    if (item.kind !== "mcp_server") skippable.add(skipToken(item, "codex"));
+  }
+  for (const item of opencodeItems) skippable.add(skipToken(item, "opencode"));
+  if (codexItems.some((item) => item.kind !== "mcp_server")) skippable.add("codex");
+  if (opencodeItems.length > 0) skippable.add("opencode");
   for (const requested of skips) {
     if (!skippable.has(requested)) {
       diagnostics.push({ severity: "error", message: `--skip ${requested} does not match any scanned item.` });
@@ -205,8 +239,53 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
   });
   if (settingsContent !== null) addFile("settings.json", settingsContent, false);
 
+  // Codex and OpenCode content lives under agent namespaces the write policy
+  // owns; every entry runs through the same addFile checks (secret scan, size
+  // caps, tar representability) as claude-code content.
+  diagnostics.push(...codexReport.diagnostics, ...opencodeReport.diagnostics);
+  if (!skips.has("codex")) {
+    for (const item of codexItems) {
+      if (skips.has(skipToken(item, "codex"))) continue;
+      if (item.kind === "skill") {
+        collectTree(join(codexAgentsDir, "skills", item.name), `codex/skills/${item.name}`, addFile, skipped);
+      } else if (item.kind === "memory") {
+        collectRegularFile(join(codexHome, "AGENTS.md"), "codex/AGENTS.md", addFile, skipped);
+      } else if (item.kind === "settings") {
+        const content = buildCodexSettings(join(codexHome, "config.toml"), diagnostics);
+        if (content !== null) addFile("codex/config.toml", content, false);
+      }
+    }
+  }
+  if (!skips.has("opencode")) {
+    for (const item of opencodeItems) {
+      if (skips.has(skipToken(item, "opencode"))) continue;
+      if (item.kind === "command") {
+        collectRegularFile(
+          join(opencodeConfigDir, "commands", `${item.name}.md`),
+          `opencode/commands/${item.name}.md`,
+          addFile,
+          skipped,
+        );
+      } else if (item.kind === "settings") {
+        const content = buildOpencodeSettings(opencodeConfigDir, diagnostics);
+        if (content !== null) addFile("opencode/opencode.json", content, false);
+      }
+    }
+  }
+
+  const hasCodex = entries.some((entry) => entry.path.startsWith("codex/"));
+  const hasOpencode = entries.some((entry) => entry.path.startsWith("opencode/"));
+  const agents = [
+    ...(entries.some((entry) => !entry.path.startsWith("codex/") && !entry.path.startsWith("opencode/")) ||
+    (!hasCodex && !hasOpencode)
+      ? ["claude-code"]
+      : []),
+    ...(hasCodex ? ["codex"] : []),
+    ...(hasOpencode ? ["opencode"] : []),
+  ];
+
   const manifest: Manifest = {
-    schemaVersion: MANIFEST_SCHEMA_VERSION,
+    schemaVersion: hasCodex || hasOpencode ? MANIFEST_SCHEMA_VERSION : CLAUDE_ONLY_SCHEMA_VERSION,
     tool: "agent-sync",
     agent: "claude-code",
     files: entries
@@ -225,6 +304,7 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
       .map((item) => toManifestServer(item)),
     hooks: hookItems.map((item) => ({ name: item.name, included: included.has(item.name) })),
   };
+  if (hasCodex || hasOpencode) manifest.agents = agents;
   if (pluginItems.length > 0) {
     manifest.plugins = pluginItems.map((item) => {
       const plugin: ManifestPlugin = { name: item.name, included: includedPlugins.has(item.name) };
@@ -379,4 +459,55 @@ function buildPortableSettings(
 function asJsonObject(value: JsonValue | undefined): { [key: string]: JsonValue } | null {
   if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
+}
+
+// Re-serializes only the portable codex keys as a minimal TOML document.
+// JSON string quoting is valid TOML basic-string quoting for these values.
+function buildCodexSettings(configPath: string, diagnostics: Diagnostic[]): Buffer | null {
+  if (!existsSync(configPath)) return null;
+  let config: { [key: string]: JsonValue };
+  try {
+    if (lstatSync(configPath).size > MAX_FILE_BYTES) return null;
+    config = parseToml(readFileSync(configPath, "utf8"));
+  } catch {
+    diagnostics.push({ severity: "warning", message: `${configPath} could not be parsed; codex settings were not exported.` });
+    return null;
+  }
+  const lines: string[] = [];
+  for (const key of [...CODEX_PORTABLE_SETTINGS_KEYS].sort()) {
+    const value = config[key];
+    if (value === undefined || isSensitiveKey(key)) continue;
+    if (typeof value === "string") lines.push(`${key} = ${JSON.stringify(value)}`);
+    else if (typeof value === "number" || typeof value === "boolean") lines.push(`${key} = ${String(value)}`);
+  }
+  if (lines.length === 0) return null;
+  return Buffer.from(`${lines.join("\n")}\n`, "utf8");
+}
+
+function buildOpencodeSettings(configDir: string, diagnostics: Diagnostic[]): Buffer | null {
+  const configPath = ["opencode.json", "opencode.jsonc"]
+    .map((name) => join(configDir, name))
+    .find((candidate) => existsSync(candidate));
+  if (configPath === undefined) return null;
+  let config: { [key: string]: JsonValue };
+  try {
+    const text = readFileSync(configPath, "utf8");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = JSON.parse(stripJsonc(text));
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    config = parsed as { [key: string]: JsonValue };
+  } catch {
+    diagnostics.push({ severity: "warning", message: `${configPath} could not be parsed; opencode settings were not exported.` });
+    return null;
+  }
+  const portable: { [key: string]: JsonValue } = {};
+  for (const key of [...OPENCODE_PORTABLE_SETTINGS_KEYS].sort()) {
+    if (key in config && !isSensitiveKey(key)) portable[key] = config[key] as JsonValue;
+  }
+  if (Object.keys(portable).length === 0) return null;
+  return Buffer.from(`${JSON.stringify(portable, null, 2)}\n`, "utf8");
 }

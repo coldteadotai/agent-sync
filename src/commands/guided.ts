@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -6,10 +6,13 @@ import type { CommandIo, ExitCode } from "../main.js";
 import { collectExport, skipToken, type ExportPlan } from "../export/collect.js";
 import {
   assertPortableSettings,
+  defaultAgentRoots,
   executeApply,
   gateSettingsHooks,
   gateSettingsPlugins,
   planApply,
+  splitBundleByRoot,
+  type AgentRoots,
 } from "../apply/apply.js";
 import type { LoadedBundle } from "../apply/bundle.js";
 import { planMcpRegistrations, runMcpRegistration, type McpRegistration } from "../apply/mcp.js";
@@ -80,7 +83,15 @@ const KIND_GROUPS: ReadonlyArray<{ kind: ScanItem["kind"]; title: string; presel
   { kind: "plugin", title: "Plugins — declarative, re-installed by name", preselected: false },
 ];
 
-export function buildTravelGroups(report: ScanReport): MultiGroup<string>[] {
+const AGENT_TITLES: Record<"codex" | "opencode", string> = {
+  codex: "Codex",
+  opencode: "OpenCode",
+};
+
+// The target-agents multi-select, folded into the travel picker: an agent's
+// groups appear only when that agent is present with candidates, so the
+// picker never shows a choice that does nothing.
+export function buildTravelGroups(report: ScanReport, others: ScanReport[] = []): MultiGroup<string>[] {
   const userItems = report.items.filter((item) => item.scope === "user" && item.status === "candidate");
   const groups: MultiGroup<string>[] = [];
   for (const definition of KIND_GROUPS) {
@@ -96,6 +107,26 @@ export function buildTravelGroups(report: ScanReport): MultiGroup<string>[] {
         return entry;
       });
     if (items.length > 0) groups.push({ title: definition.title, items });
+  }
+  for (const other of others) {
+    if (other.agent === "claude-code") continue;
+    const agent = other.agent;
+    const candidates = other.items.filter(
+      (item) => item.scope === "user" && item.status === "candidate" && item.kind !== "mcp_server",
+    );
+    if (candidates.length === 0) continue;
+    groups.push({
+      title: AGENT_TITLES[agent],
+      items: candidates.map((item) => {
+        const entry: MultiGroup<string>["items"][number] = {
+          value: skipToken(item, agent),
+          label: item.name,
+          hint: item.kind,
+          preselected: true,
+        };
+        return entry;
+      }),
+    });
   }
   if (report.excluded.length > 0) {
     groups.push({
@@ -133,7 +164,6 @@ function factsLines(reports: ScanReport[]): string[] {
   return reports.map((report) => {
     const title = titles[report.agent].padEnd(13);
     if (!report.present) return `${title} not installed`;
-    if (report.agent !== "claude-code") return `${title} found (sync lands in a later release)`;
     const userItems = report.items.filter((item) => item.scope === "user");
     const counts: string[] = [];
     for (const [kind, label] of [
@@ -163,6 +193,9 @@ const DESTINATIONS = [
 export interface GuidedOverrides {
   userDir?: string;
   claudeJsonPath?: string;
+  codexHome?: string;
+  codexAgentsDir?: string;
+  opencodeConfigDir?: string;
   destDir?: string;
   screen?: Screen;
   plain?: Plain;
@@ -174,9 +207,14 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
   if (overrides.userDir !== undefined) scanOptions.userDir = overrides.userDir;
   if (overrides.claudeJsonPath !== undefined) scanOptions.claudeJsonPath = overrides.claudeJsonPath;
   const report = scanClaudeCode(scanOptions);
-  const reports = [report, scanCodex({ projectDir: null }), scanOpencode({ projectDir: null })];
+  const codexScan: Parameters<typeof scanCodex>[0] = { projectDir: null };
+  if (overrides.codexHome !== undefined) codexScan.codexHome = overrides.codexHome;
+  if (overrides.codexAgentsDir !== undefined) codexScan.agentsDir = overrides.codexAgentsDir;
+  const opencodeScan: Parameters<typeof scanOpencode>[0] = { projectDir: null };
+  if (overrides.opencodeConfigDir !== undefined) opencodeScan.configDir = overrides.opencodeConfigDir;
+  const reports = [report, scanCodex(codexScan), scanOpencode(opencodeScan)];
 
-  const groups = buildTravelGroups(report);
+  const groups = buildTravelGroups(report, reports.slice(1));
   const hookGroup = buildHookGroup(report);
   if (groups.every((group) => group.locked === true) && hookGroup === null) {
     io.err("Nothing to sync yet. Run `agent-sync scan` to see what agent-sync looks for.");
@@ -215,6 +253,9 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
     };
     if (overrides.userDir !== undefined) collectOptions.userDir = overrides.userDir;
     if (overrides.claudeJsonPath !== undefined) collectOptions.claudeJsonPath = overrides.claudeJsonPath;
+    if (overrides.codexHome !== undefined) collectOptions.codexHome = overrides.codexHome;
+    if (overrides.codexAgentsDir !== undefined) collectOptions.codexAgentsDir = overrides.codexAgentsDir;
+    if (overrides.opencodeConfigDir !== undefined) collectOptions.opencodeConfigDir = overrides.opencodeConfigDir;
     let plan = collectExport(collectOptions);
 
     // Secret findings become a consent step: refuse-by-default, carried only
@@ -314,6 +355,7 @@ export function applyFlagEcho(selections: ApplySelections): string {
 export interface GuidedApplyOverrides {
   targetDir?: string;
   explicitTarget?: boolean;
+  roots?: AgentRoots;
   screen?: Screen;
   plain?: Plain;
   env?: Record<string, string | undefined>;
@@ -330,26 +372,39 @@ export async function runGuidedApply(
   source: string,
   overrides: GuidedApplyOverrides = {},
 ): Promise<ExitCode> {
-  const targetDir = overrides.targetDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+  const roots = overrides.roots ?? defaultAgentRoots(overrides.targetDir);
   assertPortableSettings(bundle);
 
   const ui = mode === "picker" ? pickerUi(overrides) : plainUi(io, overrides);
   try {
-    ui.intro("agent-sync apply", `${source} → ${targetDir}`, []);
+    ui.intro("agent-sync apply", `${source} → ${roots.claude}`, []);
 
-    const preview = planApply(bundle, targetDir);
-    const changing = preview.actions.filter((action) => action.kind !== "unchanged");
-    const unchanged = preview.actions.length - changing.length;
-    ui.note([
+    // Preview per agent root, pre-consent: bundle-relative paths keep their
+    // namespaces, so a codex line is self-identifying; each non-claude root
+    // is named once.
+    const previewSlices = splitBundleByRoot(bundle, roots);
+    const previewLines: string[] = [
       `Bundle verified · ${bundle.manifest.files.length} files, every hash checked, nothing written yet`,
-      ...changing.map((action) => {
+    ];
+    let unchangedTotal = 0;
+    for (const slice of previewSlices) {
+      if (slice.agent !== "claude-code") previewLines.push(`${slice.agent} → ${slice.root}`);
+      const preview = planApply(slice.bundle, slice.root);
+      for (const action of preview.actions) {
+        if (action.kind === "unchanged") {
+          unchangedTotal += 1;
+          continue;
+        }
         const consentNote = action.path === "settings.json" ? " · final content follows your answers below" : "";
-        return action.kind === "update"
-          ? `update  ${action.path} (backed up first · undo restores it)${consentNote}`
-          : `create  ${action.path}${consentNote}`;
-      }),
-      ...(unchanged > 0 ? [`${unchanged} unchanged`] : []),
-    ]);
+        previewLines.push(
+          action.kind === "update"
+            ? `update  ${action.path} (backed up first · undo restores it)${consentNote}`
+            : `create  ${action.path}${consentNote}`,
+        );
+      }
+    }
+    if (unchangedTotal > 0) previewLines.push(`${unchangedTotal} unchanged`);
+    ui.note(previewLines);
 
     const settings =
       bundle.files.has("settings.json")
@@ -404,14 +459,42 @@ export async function runGuidedApply(
       if (consent) requestedMcp.push(server.name);
     }
 
-    // Assemble done; from here it is exactly the flag path.
+    // Assemble done; from here it is exactly the flag path. The split runs
+    // AFTER the gates because gating rewrites settings.json in the bundle,
+    // and every root is planned before the first root writes.
     gateSettingsHooks(bundle, confirmedHooks);
     gateSettingsPlugins(bundle, confirmedPlugins);
     const registrations = planMcpRegistrations(bundle.manifest.mcpServers, requestedMcp);
-    const plan = planApply(bundle, targetDir);
-    const creates = plan.actions.filter((action) => action.kind === "create").length;
-    const updates = plan.actions.filter((action) => action.kind === "update").length;
-    executeApply(bundle, targetDir, plan);
+    const slices = splitBundleByRoot(bundle, roots);
+    const planned = slices.map((slice) => ({ slice, plan: planApply(slice.bundle, slice.root) }));
+    let creates = 0;
+    let updates = 0;
+    for (const { plan } of planned) {
+      creates += plan.actions.filter((action) => action.kind === "create").length;
+      updates += plan.actions.filter((action) => action.kind === "update").length;
+    }
+    const appliedRoots: string[] = [];
+    for (const { slice, plan } of planned) {
+      try {
+        executeApply(slice.bundle, slice.root, plan);
+      } catch (error) {
+        if (appliedRoots.length > 0) {
+          io.err(
+            `apply: already applied to ${appliedRoots.join(", ")} before this failure; run \`agent-sync undo\` to revert them.`,
+          );
+        }
+        throw error;
+      }
+      appliedRoots.push(slice.root);
+    }
+    const shadowed = planned.find(
+      ({ slice }) => slice.bundle.files.has("opencode.json") && existsSync(join(slice.root, "opencode.jsonc")),
+    );
+    if (shadowed !== undefined) {
+      ui.note([
+        `Note: ${shadowed.slice.root} also has opencode.jsonc, which OpenCode may read instead of the applied opencode.json.`,
+      ]);
+    }
 
     const register = overrides.register ?? runMcpRegistration;
     let failedRegistrations = 0;
@@ -432,7 +515,7 @@ export async function runGuidedApply(
       plugins: confirmedPlugins,
       mcp: requestedMcp,
     };
-    if (overrides.explicitTarget === true) selections.target = targetDir;
+    if (overrides.explicitTarget === true) selections.target = roots.claude;
     ui.outro(
       creates + updates === 0
         ? "Nothing to change; the bundle is already applied."

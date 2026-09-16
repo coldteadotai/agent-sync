@@ -19,6 +19,7 @@ import {
 } from "../dist/main.js";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const fakeHome = mkdtempSync(join(tmpdir(), "agent-sync-fakehome-"));
 
 // Assembled at runtime so this file never contains a token-shaped literal.
 const FAKE_OPENAI = ["sk", "-"].join("") + "Abcdefghijklmnopqrstuv0123456789";
@@ -94,7 +95,13 @@ test("a planted token refuses the file by default and never appears in any outpu
     const secretUser = join(secretDir, ".claude");
     mkdirSync(join(secretUser, "skills", "leaky"), { recursive: true });
     writeFileSync(join(secretUser, "skills", "leaky", "SKILL.md"), `# leaky\napi key: ${FAKE_OPENAI}\n`);
-    const options = { userDir: secretUser, claudeJsonPath: join(secretUser, ".claude.json") };
+    const options = {
+      userDir: secretUser,
+      claudeJsonPath: join(secretUser, ".claude.json"),
+      codexHome: join(fakeHome, ".codex"),
+      codexAgentsDir: join(fakeHome, ".agents"),
+      opencodeConfigDir: join(fakeHome, ".config", "opencode"),
+    };
 
     const refused = collectExport(options);
     assert.ok(!refused.entries.some((entry) => entry.path.includes("leaky")));
@@ -134,6 +141,9 @@ test("guided export asks consent per flagged file, default no", async () => {
     const code = await runGuided(io, "plain", {
       userDir: secretUser,
       claudeJsonPath: join(secretUser, ".claude.json"),
+      codexHome: join(fakeHome, ".codex"),
+      codexAgentsDir: join(fakeHome, ".agents"),
+      opencodeConfigDir: join(fakeHome, ".config", "opencode"),
       destDir,
       plain,
     });
@@ -154,9 +164,23 @@ function exportBundle(name) {
   execFileSync(
     process.execPath,
     ["bin/agent-sync.mjs", "export", dest, "--hook", "hooks.PostToolUse", "--plugin", "ponytail@market"],
-    { cwd: REPO_ROOT, env: { ...process.env, CLAUDE_CONFIG_DIR: userDir } },
+    { cwd: REPO_ROOT, env: { ...process.env, CLAUDE_CONFIG_DIR: userDir, HOME: fakeHome, USERPROFILE: fakeHome, CODEX_HOME: join(fakeHome, ".codex"), XDG_CONFIG_HOME: join(fakeHome, ".config"), XDG_DATA_HOME: join(fakeHome, ".local", "share") } },
   );
   return dest;
+}
+
+
+// Guided-apply bundles in this file are claude-only, but roots are pinned
+// anyway: without an override runGuidedApply resolves codex/opencode roots
+// from the real environment, and a future namespaced bundle here would write
+// into the developer's actual home.
+function fakeRoots(claude) {
+  return {
+    claude,
+    codexHome: join(fakeHome, ".codex"),
+    codexAgents: join(fakeHome, ".agents"),
+    opencodeConfig: join(fakeHome, ".config", "opencode"),
+  };
 }
 
 function fakeScreenIo() {
@@ -191,6 +215,7 @@ test("guided apply: consent decides hook yes, plugin no, mcp yes — writes run 
   const running = runGuidedApply(io, "picker", bundle, "flow-bundle.tgz", {
     targetDir: target,
     explicitTarget: true,
+    roots: fakeRoots(target),
     screen,
     env: {},
     register: (registration) => registered.push(registration),
@@ -235,6 +260,7 @@ test("guided apply in plain mode over piped stdin", async () => {
 
   const code = await runGuidedApply(io, "plain", bundle, "plain-flow-bundle.tgz", {
     targetDir: target,
+    roots: fakeRoots(target),
     plain,
   });
   assert.equal(code, 0);
@@ -252,7 +278,7 @@ test("guided apply cancel writes nothing", async () => {
   const fake = fakeScreenIo();
   const screen = new Screen({ input: fake.input, output: fake.output });
 
-  const running = runGuidedApply(io, "picker", bundle, "b.tgz", { targetDir: target, screen, env: {} });
+  const running = runGuidedApply(io, "picker", bundle, "b.tgz", { targetDir: target, roots: fakeRoots(target), screen, env: {} });
   setImmediate(() => {
     fake.input.emit("keypress", undefined, { name: "c", ctrl: true, sequence: "\x03" });
   });

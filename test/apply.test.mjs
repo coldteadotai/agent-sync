@@ -25,6 +25,7 @@ import {
 } from "../dist/main.js";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const fakeHome = mkdtempSync(join(tmpdir(), "agent-sync-fakehome-"));
 const BIN = join(REPO_ROOT, "bin", "agent-sync.mjs");
 
 let root;
@@ -35,7 +36,7 @@ function runCli(args, env = {}) {
   return execFileSync(process.execPath, [BIN, ...args], {
     cwd: REPO_ROOT,
     encoding: "utf8",
-    env: { ...process.env, CLAUDE_CONFIG_DIR: sourceDir, ...env },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: sourceDir, HOME: fakeHome, USERPROFILE: fakeHome, CODEX_HOME: join(fakeHome, ".codex"), XDG_CONFIG_HOME: join(fakeHome, ".config"), XDG_DATA_HOME: join(fakeHome, ".local", "share"), ...env },
   });
 }
 
@@ -97,7 +98,7 @@ test("gzip bundles and stdin pipes both apply", () => {
   const pipeTarget = freshTarget("from-pipe");
   execSync(
     `"${process.execPath}" "${BIN}" export - 2>/dev/null | "${process.execPath}" "${BIN}" apply - --target "${pipeTarget}"`,
-    { cwd: REPO_ROOT, env: { ...process.env, CLAUDE_CONFIG_DIR: sourceDir } },
+    { cwd: REPO_ROOT, env: { ...process.env, CLAUDE_CONFIG_DIR: sourceDir, HOME: fakeHome, USERPROFILE: fakeHome, CODEX_HOME: join(fakeHome, ".codex"), XDG_CONFIG_HOME: join(fakeHome, ".config"), XDG_DATA_HOME: join(fakeHome, ".local", "share") } },
   );
   assert.equal(readFileSync(join(pipeTarget, "CLAUDE.md"), "utf8"), "memory v1\n");
 });
@@ -280,7 +281,7 @@ test("the marker records the post-gate settings hash, matching disk", () => {
 });
 
 test("a newer manifest schema asks for a newer tool instead of guessing", () => {
-  const manifest = { schemaVersion: 2, files: [] };
+  const manifest = { schemaVersion: 3, files: [] };
   const tar = createTar([{ path: "manifest.json", content: Buffer.from(JSON.stringify(manifest)) }]);
   assert.throws(() => loadBundleFromBuffer(tar), /needs a newer agent-sync/);
 });
