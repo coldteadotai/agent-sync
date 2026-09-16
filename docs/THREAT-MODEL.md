@@ -45,7 +45,7 @@ These are deliberate v1 edges, kept here so they are decisions rather than surpr
 
 ## Out of scope
 
-agent-sync does not defend against a compromised source machine, and it does not judge the content of what you sync: a skill is data to this tool, and a malicious skill synced faithfully is still malicious on arrival. Review what lives in your setup before carrying it anywhere. Supply-chain trust in the published package itself is addressed with a zero-dependency runtime, pinned CI, and npm provenance attestation.
+agent-sync does not defend against a compromised source machine, and it does not judge the content of what you sync: a skill is data to this tool, and a malicious skill synced faithfully is still malicious on arrival. Review what lives in your setup before carrying it anywhere. Supply-chain trust in the published package itself rests today on two things: a zero-dependency runtime and a deterministic build. Releases are currently published by the maintainer under two-factor authentication, and no automation token capable of publishing this package exists. npm provenance attestation and pinned-CI publishing arrive together when releases move into CI (`.github/workflows/release.yml` is that path, dormant until then). Until provenance lands, verify a release by unpacking the registry tarball and comparing per-file hashes against a local `npm pack` of the same tagged commit: the build is deterministic, so the contents must match even though the compressed tarballs may differ by a gzip header byte.
 
 ## Reporting
 

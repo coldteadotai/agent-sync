@@ -1,5 +1,11 @@
 name: release
 
+# Dormant by choice: releases are currently published manually by the
+# maintainer, and no automation token capable of publishing this package
+# exists. This workflow becomes the release path once npm Trusted Publishing
+# is configured for the package and the publish step below is switched to
+# OIDC (needs npm >= 11.5.1). Until then a pushed tag fails closed at
+# authentication: the publish step carries no credentials at all.
 on:
   push:
     tags: ["v*"]
@@ -48,5 +54,3 @@ jobs:
             exit 1
           fi
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
