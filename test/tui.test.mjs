@@ -48,6 +48,9 @@ test("theme: unicode detection and color ladder", () => {
   assert.equal(ascii.paint("accent", "hi"), "hi");
   const colored = createTheme({ env: { FORCE_COLOR: "1" }, platform: "darwin", isTTY: true });
   assert.match(colored.paint("accent", "hi"), /\x1b\[36mhi\x1b\[39m/);
+  const deep = createTheme({ env: { FORCE_COLOR: "1", TERM: "xterm-256color" }, platform: "darwin", isTTY: true });
+  assert.match(deep.paint("highlight", "row"), /\x1b\[48;5;236mrow\x1b\[49m/, "256-color terminals get the quiet band");
+  assert.match(colored.paint("highlight", "row"), /\x1b\[1mrow\x1b\[22m/, "basic color falls back to bold, never inverse");
 });
 
 test("visual width and truncation never let a line exceed budget", () => {

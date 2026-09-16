@@ -356,8 +356,10 @@ test("guided picker flow: accepting every default writes setup.tgz and echoes th
   assert.ok(!("hooks" in settings), "hooks are opt-in and none were selected");
 
   const rendered = fake.chunks.join("");
-  assert.match(rendered, /never leaves? this machine/);
+  assert.ok(!/never leaves? this machine/.test(rendered), "exclusions left the picker by design");
+  assert.match(rendered, /What goes in the bundle\?/);
   assert.match(rendered, /This is what leaves the machine/);
+  assert.match(rendered, /excluded item(s)? stayed behind/);
   assert.match(rendered, /agent-sync export setup\.tgz/);
 });
 
@@ -376,7 +378,7 @@ test("guided plain flow: scripted answers write the bundle and close stdin", asy
   assert.ok(existsSync(join(destDir, "setup.tgz")));
   const transcript = said.join("");
   assert.match(transcript, /plain mode/);
-  assert.match(transcript, /never leave|never included/i);
+  assert.match(transcript, /excluded item(s)? stayed behind/);
   assert.match(transcript, /agent-sync export setup\.tgz/);
 });
 
