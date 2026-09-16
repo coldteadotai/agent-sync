@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -473,7 +473,28 @@ export async function runGuidedApply(
       creates += plan.actions.filter((action) => action.kind === "create").length;
       updates += plan.actions.filter((action) => action.kind === "update").length;
     }
-    for (const { slice, plan } of planned) executeApply(slice.bundle, slice.root, plan);
+    const appliedRoots: string[] = [];
+    for (const { slice, plan } of planned) {
+      try {
+        executeApply(slice.bundle, slice.root, plan);
+      } catch (error) {
+        if (appliedRoots.length > 0) {
+          io.err(
+            `apply: already applied to ${appliedRoots.join(", ")} before this failure; run \`agent-sync undo\` to revert them.`,
+          );
+        }
+        throw error;
+      }
+      appliedRoots.push(slice.root);
+    }
+    const shadowed = planned.find(
+      ({ slice }) => slice.bundle.files.has("opencode.json") && existsSync(join(slice.root, "opencode.jsonc")),
+    );
+    if (shadowed !== undefined) {
+      ui.note([
+        `Note: ${shadowed.slice.root} also has opencode.jsonc, which OpenCode may read instead of the applied opencode.json.`,
+      ]);
+    }
 
     const register = overrides.register ?? runMcpRegistration;
     let failedRegistrations = 0;

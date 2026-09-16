@@ -1,5 +1,4 @@
-import { lstatSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CommandDef, ExitCode } from "../main.js";
 import { loadBundleFromBuffer, loadBundleFromDirectory, type LoadedBundle } from "../apply/bundle.js";
@@ -120,6 +119,7 @@ export const applyCommand: CommandDef = {
 
     let totalCreated = 0;
     let totalUpdated = 0;
+    const appliedRoots: string[] = [];
     for (const { slice, plan } of planned) {
       const creates = plan.actions.filter((action) => action.kind === "create");
       const updates = plan.actions.filter((action) => action.kind === "update");
@@ -137,12 +137,33 @@ export const applyCommand: CommandDef = {
         if (action.kind !== "unchanged") io.out(`  ${action.kind.padEnd(7)} ${action.path}`);
       }
       if (!dryRun) {
-        const marker = executeApply(slice.bundle, slice.root, plan);
+        // Every root was planned (and write-checked) up front, so hostility
+        // refuses everything before any root writes. A runtime I/O failure
+        // between roots can still leave earlier roots applied; each has its
+        // own marker, so the recovery is one `undo` — and the failure says so
+        // instead of pretending nothing happened.
+        let marker;
+        try {
+          marker = executeApply(slice.bundle, slice.root, plan);
+        } catch (error) {
+          if (appliedRoots.length > 0) {
+            io.err(
+              `apply: already applied to ${appliedRoots.join(", ")} before this failure; run \`agent-sync undo\` to revert them.`,
+            );
+          }
+          throw error;
+        }
+        appliedRoots.push(slice.root);
         if (marker !== null && marker.updated.length > 0) {
           io.out(`Backed up ${marker.updated.length} overwritten file(s); \`agent-sync undo\` restores them.`);
         }
         totalCreated += creates.length;
         totalUpdated += updates.length;
+        if (slice.bundle.files.has("opencode.json") && existsSync(join(slice.root, "opencode.jsonc"))) {
+          io.out(
+            `Note: ${slice.root} also has opencode.jsonc, which OpenCode may read instead of the applied opencode.json.`,
+          );
+        }
       }
     }
     if (!dryRun && (totalCreated > 0 || totalUpdated > 0)) {

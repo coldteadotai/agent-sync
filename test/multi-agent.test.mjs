@@ -261,6 +261,97 @@ test("per-agent settings allowlists refuse namespaced configs with unknown keys"
   assert.match(badPath.stderr, /not a path agent-sync exports/);
 });
 
+test("colliding roots merge into one slice with one marker", () => {
+  const plan = collect();
+  const bundle = {
+    manifest: plan.manifest,
+    files: new Map(plan.entries.map((entry) => [entry.path, { content: entry.content, executable: entry.executable }])),
+  };
+  const shared = join(root, "shared-root");
+  const slices = splitBundleByRoot(bundle, {
+    claude: shared,
+    codexHome: join(shared, "..", "shared-root"),
+    codexAgents: join(root, "sep-agents"),
+    opencodeConfig: join(root, "sep-opencode"),
+  });
+  assert.equal(slices.filter((slice) => slice.root.includes("shared-root")).length, 1, "spelling variants must merge");
+  const merged = slices.find((slice) => slice.root.includes("shared-root"));
+  assert.ok(merged.bundle.files.has("CLAUDE.md"));
+  assert.ok(merged.bundle.files.has("AGENTS.md"), "codex files must land in the merged slice, not a second marker");
+});
+
+test("non-claude slice markers carry only their own files, not claude's consent metadata", () => {
+  const plan = collect({ confirmedHooks: [] });
+  const bundle = {
+    manifest: { ...plan.manifest, hooks: [{ name: "hooks.PostToolUse", included: true }] },
+    files: new Map(plan.entries.map((entry) => [entry.path, { content: entry.content, executable: entry.executable }])),
+  };
+  const slices = splitBundleByRoot(bundle, {
+    claude: "/t/claude",
+    codexHome: "/t/codex",
+    codexAgents: "/t/agents",
+    opencodeConfig: "/t/opencode",
+  });
+  const codexSlice = slices.find((slice) => slice.root === "/t/codex");
+  assert.deepEqual(codexSlice.bundle.manifest.hooks, []);
+  assert.deepEqual(codexSlice.bundle.manifest.mcpServers, []);
+  assert.equal(codexSlice.bundle.manifest.plugins, undefined);
+  const claudeSlice = slices.find((slice) => slice.root === "/t/claude");
+  assert.equal(claudeSlice.bundle.manifest.hooks.length, 1);
+});
+
+test("a mid-run failure names the roots already applied and points at undo", { skip: process.platform === "win32" }, () => {
+  const bundlePath = join(root, "partial.tgz");
+  execFileSync(process.execPath, ["bin/agent-sync.mjs", "export", bundlePath], {
+    cwd: REPO_ROOT,
+    env: cliEnv(sourceHome),
+  });
+  const home = join(root, "partial-home");
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  // .codex is planned fine (nothing exists yet) but unwritable at execute time.
+  mkdirSync(join(home, ".codex"), { recursive: true, mode: 0o555 });
+  try {
+    execFileSync(process.execPath, ["bin/agent-sync.mjs", "apply", bundlePath], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      env: cliEnv(home),
+    });
+    assert.fail("expected the codex root to fail");
+  } catch (error) {
+    assert.equal(error.status, 2);
+    const stderr = String(error.stderr);
+    assert.match(stderr, /already applied to .*\.claude.*before this failure/);
+    assert.match(stderr, /agent-sync undo/);
+  } finally {
+    execFileSync("chmod", ["755", join(home, ".codex")]);
+  }
+  const undoOut = execFileSync(process.execPath, ["bin/agent-sync.mjs", "undo"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    env: cliEnv(home),
+  });
+  assert.ok(!existsSync(join(home, ".claude", "CLAUDE.md")), "undo must revert the partially applied root");
+  assert.match(undoOut, /removed/);
+});
+
+test("apply warns when the target's opencode.jsonc would shadow the applied opencode.json", () => {
+  const bundlePath = join(root, "shadow.tgz");
+  execFileSync(process.execPath, ["bin/agent-sync.mjs", "export", bundlePath], {
+    cwd: REPO_ROOT,
+    env: cliEnv(sourceHome),
+  });
+  const home = join(root, "shadow-home");
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  mkdirSync(join(home, ".config", "opencode"), { recursive: true });
+  writeFileSync(join(home, ".config", "opencode", "opencode.jsonc"), "// existing\n{}\n");
+  const output = execFileSync(process.execPath, ["bin/agent-sync.mjs", "apply", bundlePath], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    env: cliEnv(home),
+  });
+  assert.match(output, /opencode\.jsonc, which OpenCode may read instead/);
+});
+
 test("symlink containment holds per agent root", () => {
   const plan = collect();
   const bundle = {

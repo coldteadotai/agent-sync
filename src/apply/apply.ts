@@ -440,16 +440,36 @@ export interface RootSlice {
 // existing plan/execute/undo machinery — markers, backups, write policy and
 // symlink containment included — runs unchanged per root.
 export function splitBundleByRoot(bundle: LoadedBundle, roots: AgentRoots): RootSlice[] {
+  // Keyed by the RESOLVED root path: two logical roots pointing at the same
+  // directory (CODEX_HOME aimed at the claude target, spelling variants)
+  // merge into one slice, so that directory gets one apply and one marker
+  // instead of the second marker orphaning the first slice's files.
   const slices = new Map<string, RootSlice>();
   const place = (root: string, agent: RootSlice["agent"], rebased: string, path: string): void => {
-    let slice = slices.get(root);
+    const key = resolve(root);
+    let slice = slices.get(key);
     if (slice === undefined) {
       slice = {
         root,
         agent,
-        bundle: { manifest: { ...bundle.manifest, files: [] }, files: new Map() },
+        // Non-claude slices carry only their own files: a codex marker
+        // claiming claude's hooks or plugins would mislead anyone reading it.
+        bundle: {
+          manifest:
+            agent === "claude-code"
+              ? { ...bundle.manifest, files: [] }
+              : {
+                  schemaVersion: bundle.manifest.schemaVersion,
+                  tool: bundle.manifest.tool,
+                  agent: bundle.manifest.agent,
+                  files: [],
+                  mcpServers: [],
+                  hooks: [],
+                },
+          files: new Map(),
+        },
       };
-      slices.set(root, slice);
+      slices.set(key, slice);
     }
     const payload = bundle.files.get(path);
     if (payload === undefined) return;
