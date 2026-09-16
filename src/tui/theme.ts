@@ -13,6 +13,11 @@ export interface Glyphs {
   ellipsisUp: string;
   ellipsisDown: string;
   pointer: string;
+  navUpDown: string;
+  navLeftRight: string;
+  sep: string;
+  ellipsis: string;
+  rule: string;
 }
 
 const UNICODE: Glyphs = {
@@ -30,6 +35,11 @@ const UNICODE: Glyphs = {
   ellipsisUp: "↑",
   ellipsisDown: "↓",
   pointer: "›",
+  navUpDown: "↑↓",
+  navLeftRight: "←→",
+  sep: "·",
+  ellipsis: "…",
+  rule: "─",
 };
 
 const ASCII: Glyphs = {
@@ -47,6 +57,11 @@ const ASCII: Glyphs = {
   ellipsisUp: "^",
   ellipsisDown: "v",
   pointer: ">",
+  navUpDown: "up/down",
+  navLeftRight: "left/right",
+  sep: "-",
+  ellipsis: "...",
+  rule: "-",
 };
 
 export interface ThemeEnvironment {

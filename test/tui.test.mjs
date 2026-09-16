@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import {
   buildMultiState,
   colorEnabled,
@@ -219,6 +219,151 @@ test("plain mode: confirm honors default and EOF cancels", async () => {
   assert.deepEqual(await plain.confirm("Carry hook?", false), { cancelled: false, value: false });
   const eof = new Plain({ input: Readable.from([]), output: { write: () => {} } });
   assert.deepEqual(await eof.confirm("Carry hook?"), { cancelled: true });
+});
+
+test("plain mode survives all answers arriving in one pipe chunk", async () => {
+  const input = Readable.from(["9,9\n1,3,\ny\n"]);
+  const out = [];
+  const plain = new Plain({ input, output: { write: (chunk) => out.push(chunk) } });
+  const picked = await plain.groupMultiselect("Select skills", [
+    { title: "Skills", items: [{ value: "a", label: "one" }, { value: "b", label: "two" }, { value: "c", label: "three" }] },
+  ]);
+  assert.deepEqual(picked, { cancelled: false, value: ["a", "c"] });
+  const confirmed = await plain.confirm("Carry hook?");
+  assert.deepEqual(confirmed, { cancelled: false, value: true });
+});
+
+test("plain parser rejects non-numeric pieces and tolerates trailing separators", async () => {
+  const input = Readable.from(["2x\n", "1,\n"]);
+  const say = [];
+  const plain = new Plain({ input, output: { write: (chunk) => say.push(chunk) } });
+  const result = await plain.groupMultiselect("pick", [
+    { title: "G", items: [{ value: "a", label: "one" }, { value: "b", label: "two" }] },
+  ]);
+  assert.deepEqual(result, { cancelled: false, value: ["a"] });
+  assert.match(say.join(""), /Use numbers between 1 and 2/);
+});
+
+test("a key burst past the queue bound can never drop the cancel", async () => {
+  const { input, output } = fakeScreenIo();
+  const screen = new Screen({ input, output });
+  screen.open();
+  for (let i = 0; i < 70; i += 1) input.emit("keypress", "x", { name: "x", sequence: "x" });
+  input.emit("end");
+  const key = await screen.waitKey();
+  assert.equal(key.name, "cancel");
+  screen.close();
+});
+
+test("ctrl+d maps to cancel in raw mode", async () => {
+  const { input, output } = fakeScreenIo();
+  const screen = new Screen({ input, output });
+  screen.open();
+  const pending = screen.waitKey();
+  input.emit("keypress", undefined, { name: "d", ctrl: true, sequence: "\x04" });
+  assert.equal((await pending).name, "cancel");
+  screen.close();
+});
+
+test("filtered bulk operations touch only visible items", () => {
+  const state = buildMultiState("pick", GROUPS);
+  reduceMulti(state, press("/"));
+  reduceMulti(state, press("h"));
+  assert.equal(visibleItems(state).length, 1);
+  reduceMulti(state, key("down"));
+  reduceMulti(state, press("a"));
+  assert.deepEqual([...state.selected], [1], "only the visible hermes item toggled");
+  reduceMulti(state, press("i"));
+  assert.equal(state.selected.size, 0, "invert scoped to the single visible item");
+
+  const zero = buildMultiState("pick", GROUPS);
+  reduceMulti(zero, press("/"));
+  for (const character of "zzz") reduceMulti(zero, press(character));
+  assert.equal(visibleItems(zero).length, 0);
+  reduceMulti(zero, key("down"));
+  reduceMulti(zero, press("i"));
+  assert.equal(zero.selected.size, 0, "invert with zero matches is a no-op");
+});
+
+test("group headers survive filtering", () => {
+  const theme = asciiTheme();
+  const state = buildMultiState("pick", GROUPS);
+  reduceMulti(state, press("/"));
+  reduceMulti(state, press("p"));
+  const frame = renderMulti(state, theme, 24).join("\n");
+  assert.match(frame, /-- Plugins /);
+  assert.match(frame, /ponytail/);
+});
+
+test("locked section collapses to one line before controls are cut", () => {
+  const theme = asciiTheme();
+  const bigLocked = [
+    { title: "Skills", items: [{ value: "s", label: "one" }] },
+    {
+      title: "Never leaves",
+      locked: true,
+      items: Array.from({ length: 10 }, (_, i) => ({ value: i, label: `secret-${i}` })),
+    },
+  ];
+  const state = buildMultiState("pick", bigLocked);
+  const frame = renderMulti(state, theme, 10);
+  assert.ok(frame.length <= 10 + 3, "frame respects the budget with slack for the min list");
+  const text = frame.join("\n");
+  assert.match(text, /10 item\(s\) never leave this machine/);
+  assert.match(text, /enter confirm/, "footer survived");
+});
+
+test("keypress decoding from raw escape bytes via the real decoder", async () => {
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const chunks = [];
+  const output = { write: (c) => chunks.push(c), columns: 60, rows: 24, isTTY: true, on: () => {}, off: () => {} };
+  const screen = new Screen({ input, output });
+  screen.open();
+  const seen = [];
+  screen.onKey((key) => seen.push(key.name || key.char));
+  input.write("\x1b[B");
+  input.write("\x7f");
+  input.write("y");
+  input.write("\x03");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.deepEqual(seen, ["down", "backspace", "y", "cancel"]);
+  screen.close();
+});
+
+test("confirm accepts uppercase Y", async () => {
+  const io = fakeScreenIo();
+  const screen = new Screen({ input: io.input, output: io.output });
+  const flow = createFlow(screen, asciiTheme());
+  flow.intro("t");
+  const pending = flow.confirm("Sure?", false);
+  io.input.emit("keypress", "Y", { name: "y", shift: true, sequence: "Y" });
+  io.input.emit("keypress", undefined, { name: "return", sequence: "\r" });
+  assert.deepEqual(await pending, { cancelled: false, value: true });
+  screen.close();
+});
+
+test("the design-page picker frame renders as specified (ascii snapshot)", () => {
+  const theme = asciiTheme();
+  const state = buildMultiState("What should travel?", [
+    { title: "Skills", items: [{ value: "s1", label: "boxd-cli", preselected: true }] },
+    {
+      title: "Never leaves this machine",
+      locked: true,
+      lockedReason: "Credentials never sync.",
+      items: [{ value: "x", label: ".credentials.json", hint: "credentials never sync" }],
+    },
+  ]);
+  assert.deepEqual(renderMulti(state, theme, 24), [
+    "*  What should travel?  1 of 1 selected",
+    "|  -- Skills ------------------------------------",
+    "|  > [x] boxd-cli",
+    "|  -- Never leaves this machine -----------------",
+    "|  x .credentials.json  credentials never sync",
+    "|    Credentials never sync.",
+    "+  up/down move - space select - tab next - a group - i invert - / filter - enter confirm",
+  ]);
 });
 
 test("plainModeRequested triggers", () => {

@@ -146,16 +146,22 @@ export function reduceMulti<T>(state: MultiState<T>, key: Key): MultiOutcome<T> 
     }
     case key.char === "a": {
       if (!current) return { kind: "continue" };
-      const groupItems = state.items.filter((item) => item.groupIndex === current.groupIndex);
-      const allOn = groupItems.every((item) => state.selected.has(item.id));
-      for (const item of groupItems) {
+      // With a filter active, bulk operations touch only what the user can
+      // see: selection must never change without a visual trace.
+      const scope =
+        state.query.length > 0
+          ? visible
+          : state.items.filter((item) => item.groupIndex === current.groupIndex);
+      const allOn = scope.every((item) => state.selected.has(item.id));
+      for (const item of scope) {
         if (allOn) state.selected.delete(item.id);
         else state.selected.add(item.id);
       }
       return { kind: "continue" };
     }
     case key.char === "i": {
-      for (const item of state.items) {
+      const scope = state.query.length > 0 ? visible : state.items;
+      for (const item of scope) {
         if (state.selected.has(item.id)) state.selected.delete(item.id);
         else state.selected.add(item.id);
       }
@@ -194,12 +200,12 @@ export function renderMulti<T>(state: MultiState<T>, theme: Theme, maxRows: numb
   const rows: string[] = [];
   let lastGroup = -1;
   visible.forEach((item, index) => {
-    if (item.groupIndex !== lastGroup && state.query.length === 0) {
+    if (item.groupIndex !== lastGroup) {
       lastGroup = item.groupIndex;
       const group = state.groups[item.groupIndex];
       if (group) {
         const title = ` ${group.title} `;
-        rows.push(`${bar}  ${theme.paint("dim", `──${title}${"─".repeat(Math.max(0, RULE_WIDTH - title.length))}`)}`);
+        rows.push(`${bar}  ${theme.paint("dim", `${g.rule.repeat(2)}${title}${g.rule.repeat(Math.max(0, RULE_WIDTH - title.length))}`)}`);
       }
     }
     const active = index === state.cursor;
@@ -210,31 +216,44 @@ export function renderMulti<T>(state: MultiState<T>, theme: Theme, maxRows: numb
   });
   if (visible.length === 0) rows.push(`${bar}  ${theme.paint("dim", "No matches.")}`);
 
-  const lockedLines: string[] = [];
+  let lockedLines: string[] = [];
+  let lockedCount = 0;
   state.groups.forEach((group) => {
     if (!group.locked) return;
+    lockedCount += group.items.length;
     const title = ` ${group.title} `;
-    lockedLines.push(`${bar}  ${theme.paint("dim", `──${title}${"─".repeat(Math.max(0, RULE_WIDTH - title.length))}`)}`);
+    lockedLines.push(`${bar}  ${theme.paint("dim", `${g.rule.repeat(2)}${title}${g.rule.repeat(Math.max(0, RULE_WIDTH - title.length))}`)}`);
     for (const item of group.items) {
       lockedLines.push(`${bar}  ${theme.paint("dim", `${g.lockedMark} ${item.label}${item.hint ? `  ${item.hint}` : ""}`)}`);
     }
     if (group.lockedReason) lockedLines.push(`${bar}  ${theme.paint("dim", `  ${group.lockedReason}`)}`);
   });
 
+  const sep = ` ${g.sep} `;
   const footer: string[] = [];
   if (state.error) footer.push(`${theme.paint("warn", g.stepError)}  ${theme.paint("warn", state.error)}`);
   footer.push(
-    `${theme.paint("accent", g.railEnd)}  ${theme.paint("dim", "↑↓ move · space select · tab next · a group · i invert · / filter · enter confirm")}`,
+    `${theme.paint("accent", g.railEnd)}  ${theme.paint(
+      "dim",
+      [`${g.navUpDown} move`, "space select", "tab next", "a group", "i invert", "/ filter", "enter confirm"].join(sep),
+    )}`,
   );
 
-  const overhead = lines.length + lockedLines.length + footer.length;
+  // Short terminals: locked lines collapse to one before the list shrinks
+  // below usable, and the footer and error are never the rows that get cut.
+  let overhead = lines.length + lockedLines.length + footer.length;
+  if (lockedCount > 0 && overhead + 3 > maxRows) {
+    lockedLines = [
+      `${bar}  ${theme.paint("dim", `${g.lockedMark} ${lockedCount} item(s) never leave this machine`)}`,
+    ];
+    overhead = lines.length + lockedLines.length + footer.length;
+  }
   const budget = Math.max(3, maxRows - overhead);
   const windowed = windowRows(rows, cursorRowIndex(state, visible), budget, theme);
   return [...lines, ...windowed, ...lockedLines, ...footer];
 }
 
 function cursorRowIndex<T>(state: MultiState<T>, visible: MultiState<T>["items"]): number {
-  if (state.query.length > 0) return state.cursor;
   let row = 0;
   let lastGroup = -1;
   for (let index = 0; index < visible.length; index += 1) {
@@ -269,7 +288,7 @@ export function createFlow(screen: Screen, theme: Theme): Flow {
 
   const summaryCommit = (message: string, summary: string): void => {
     screen.commit([
-      `${theme.paint("ok", g.stepDone)}  ${message} ${theme.paint("dim", `· ${summary}`)}`,
+      `${theme.paint("ok", g.stepDone)}  ${message} ${theme.paint("dim", `${g.sep} ${summary}`)}`,
       bar,
     ]);
   };
@@ -305,15 +324,19 @@ export function createFlow(screen: Screen, theme: Theme): Flow {
         screen.renderLive([
           `${theme.paint("accent", g.stepActive)}  ${theme.paint("bright", message)}`,
           `${bar}  ${yes} ${theme.paint("dim", "/")} ${no}`,
-          `${theme.paint("accent", g.railEnd)}  ${theme.paint("dim", "←→ choose · y/n · enter confirm")}`,
+          `${theme.paint("accent", g.railEnd)}  ${theme.paint(
+            "dim",
+            [`${g.navLeftRight} choose`, "y/n", "enter confirm"].join(` ${g.sep} `),
+          )}`,
         ]);
         const key = await screen.waitKey();
         if (key.name === "cancel" || key.name === "escape") {
           cancelCommit(message);
           return cancelled();
         }
-        if (key.char === "y") value = true;
-        else if (key.char === "n") value = false;
+        const lower = key.char?.toLowerCase();
+        if (lower === "y") value = true;
+        else if (lower === "n") value = false;
         else if (key.name === "left" || key.name === "right" || key.char === "h" || key.char === "l") value = !value;
         else if (key.name === "return" || key.name === "enter") {
           screen.clearLive();
@@ -324,6 +347,7 @@ export function createFlow(screen: Screen, theme: Theme): Flow {
     },
 
     async select(message, items) {
+      if (items.length === 0) throw new Error("select needs at least one option.");
       let cursor = 0;
       for (;;) {
         const rows = items.map((item, index) => {
@@ -332,10 +356,14 @@ export function createFlow(screen: Screen, theme: Theme): Flow {
           const hint = item.hint ? `  ${theme.paint("dim", item.hint)}` : "";
           return `${bar}  ${mark} ${active ? theme.paint("bright", item.label) : item.label}${hint}`;
         });
+        const windowed = windowRows(rows, cursor, Math.max(3, screen.rows - 4), theme);
         screen.renderLive([
           `${theme.paint("accent", g.stepActive)}  ${theme.paint("bright", message)}`,
-          ...rows,
-          `${theme.paint("accent", g.railEnd)}  ${theme.paint("dim", "↑↓ move · enter confirm")}`,
+          ...windowed,
+          `${theme.paint("accent", g.railEnd)}  ${theme.paint(
+            "dim",
+            [`${g.navUpDown} move`, "enter confirm"].join(` ${g.sep} `),
+          )}`,
         ]);
         const key = await screen.waitKey();
         if (key.name === "cancel" || key.name === "escape") {

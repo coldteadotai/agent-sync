@@ -12,6 +12,10 @@ export interface PlainIo {
 // the picker draws.
 export class Plain {
   private io: PlainIo;
+  private rl: readline.Interface | null = null;
+  private lines: string[] = [];
+  private waiters: ((line: string | null) => void)[] = [];
+  private ended = false;
 
   constructor(io?: Partial<PlainIo>) {
     this.io = {
@@ -24,23 +28,38 @@ export class Plain {
     this.io.output.write(`${line}\n`);
   }
 
+  close(): void {
+    this.rl?.close();
+    this.rl = null;
+  }
+
+  // One long-lived interface: piped stdin delivers many answers in one chunk,
+  // and a per-question interface would swallow every line after the first.
+  private ensureInterface(): void {
+    if (this.rl !== null || this.ended) return;
+    this.rl = readline.createInterface({
+      input: this.io.input,
+      terminal: false,
+    });
+    this.rl.on("line", (line) => {
+      const waiter = this.waiters.shift();
+      if (waiter) waiter(line);
+      else this.lines.push(line);
+    });
+    this.rl.on("close", () => {
+      this.ended = true;
+      for (const waiter of this.waiters.splice(0)) waiter(null);
+    });
+  }
+
   private ask(question: string): Promise<string | null> {
+    this.ensureInterface();
+    this.io.output.write(`${question}\n> `);
+    const buffered = this.lines.shift();
+    if (buffered !== undefined) return Promise.resolve(buffered);
+    if (this.ended) return Promise.resolve(null);
     return new Promise((resolve) => {
-      const rl = readline.createInterface({
-        input: this.io.input,
-        output: this.io.output as NodeJS.WritableStream,
-        terminal: false,
-      });
-      let settled = false;
-      const finish = (answer: string | null): void => {
-        if (settled) return;
-        settled = true;
-        rl.close();
-        resolve(answer);
-      };
-      this.io.output.write(`${question}\n> `);
-      rl.once("line", (line) => finish(line));
-      rl.once("close", () => finish(null));
+      this.waiters.push(resolve);
     });
   }
 
@@ -63,8 +82,9 @@ export class Plain {
         .join("\n");
       const answer = await this.ask(`${message}\n${listing}\nEnter a number:`);
       if (answer === null) return cancelled();
-      const index = Number.parseInt(answer.trim(), 10) - 1;
-      const chosen = items[index];
+      const pieces = parsePieces(answer);
+      const index = pieces?.[0];
+      const chosen = index === undefined ? undefined : items[index];
       if (chosen !== undefined) return done(chosen.value);
       this.say(`Enter a number between 1 and ${items.length}.`);
     }
@@ -107,8 +127,8 @@ export class Plain {
       else if (text === "none") picked = [];
       else if (text === "") picked = selectable.filter((item) => item.preselected);
       else {
-        const indexes = text.split(/[\s,]+/).map((piece) => Number.parseInt(piece, 10) - 1);
-        if (indexes.some((index) => Number.isNaN(index) || selectable[index] === undefined)) {
+        const indexes = parsePieces(text);
+        if (indexes === null || indexes.some((index) => selectable[index] === undefined)) {
           this.say(`Use numbers between 1 and ${selectable.length}, separated by commas.`);
           continue;
         }
@@ -121,6 +141,20 @@ export class Plain {
       return done(picked.map((item) => item.value));
     }
   }
+}
+
+function parsePieces(text: string): number[] | null {
+  const pieces = text
+    .trim()
+    .split(/[\s,]+/)
+    .filter((piece) => piece.length > 0);
+  if (pieces.length === 0) return null;
+  const indexes: number[] = [];
+  for (const piece of pieces) {
+    if (!/^\d+$/.test(piece)) return null;
+    indexes.push(Number.parseInt(piece, 10) - 1);
+  }
+  return indexes;
 }
 
 export function plainModeRequested(env: Record<string, string | undefined> = process.env): boolean {

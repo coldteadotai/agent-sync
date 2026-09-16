@@ -53,20 +53,23 @@ function isWide(code: number): boolean {
   );
 }
 
-// Truncate to a visual width, preserving ANSI sequences and closing style at
-// the cut. Rendered lines always fit the terminal, so cursor math can never
-// be corrupted by wrapping (the Windows prompt-duplication bug class).
-export function visualTruncate(line: string, maxWidth: number): string {
+// Truncate to a visual width, preserving ANSI sequences. Rendered lines
+// always fit the terminal, so cursor math can never be corrupted by wrapping
+// (the Windows prompt-duplication bug class). The reset is appended only when
+// an escape was consumed: escape-free input stays escape-free (NO_COLOR).
+export function visualTruncate(line: string, maxWidth: number, ellipsis = "…"): string {
   if (visualWidth(line) <= maxWidth) return line;
   let width = 0;
   let out = "";
   let index = 0;
-  const budget = Math.max(0, maxWidth - 1);
+  let sawEscape = false;
+  const budget = Math.max(0, maxWidth - visualWidth(ellipsis));
   while (index < line.length) {
     const escape = line.slice(index).match(/^\x1b\[[0-9;?]*[A-Za-z]/);
     if (escape !== null) {
       out += escape[0];
       index += escape[0].length;
+      sawEscape = true;
       continue;
     }
     const character = String.fromCodePoint(line.codePointAt(index) ?? 0);
@@ -76,12 +79,13 @@ export function visualTruncate(line: string, maxWidth: number): string {
     width += characterWidth;
     index += character.length;
   }
-  return `${out}…\x1b[0m`;
+  return `${out}${ellipsis}${sawEscape ? "\x1b[0m" : ""}`;
 }
 
 export interface ScreenOptions {
   input?: ScreenInput;
   output?: ScreenOutput;
+  ellipsis?: string;
 }
 
 export class Screen {
@@ -96,14 +100,24 @@ export class Screen {
   private keyQueue: Key[] = [];
   private opened = false;
   private restore: (() => void) | null = null;
+  private ellipsis: string;
+  private lastWidth = 0;
   private resizeHandler = (): void => {
-    if (this.lastLive.length > 0) this.renderLive(this.lastLive);
+    if (this.lastLive.length === 0) return;
+    const lines = this.lastLive;
+    // A shrink rewraps already-painted lines, so liveRows can understate the
+    // physical height; clearing first is the cheap hardening, and one stale
+    // row above the region is the accepted ceiling (clack shares it).
+    if (this.columns < this.lastWidth) this.clearLive();
+    this.renderLive(lines);
   };
+  private signalHandlers: Array<[NodeJS.Signals, () => void]> = [];
 
   constructor(options: ScreenOptions = {}) {
     this.input = options.input ?? (process.stdin as ScreenInput);
     // All interactive UI renders on stderr; stdout stays a pipe.
     this.output = options.output ?? (process.stderr as unknown as ScreenOutput);
+    this.ellipsis = options.ellipsis ?? "…";
   }
 
   get columns(): number {
@@ -130,11 +144,21 @@ export class Screen {
     this.input.on("end", this.onEof);
     this.input.on("close", this.onEof);
     this.output.on?.("resize", this.resizeHandler);
-    process.on("SIGWINCH", noop);
     this.write("\x1b[?25l");
     const restore = (): void => this.close();
     this.restore = restore;
     process.on("exit", restore);
+    // Default-disposition signals kill without running exit handlers, which
+    // would strand the terminal raw with a hidden cursor.
+    for (const signal of ["SIGTERM", "SIGHUP"] as const) {
+      const handler = (): void => {
+        this.close();
+        process.removeListener(signal, handler);
+        process.kill(process.pid, signal);
+      };
+      this.signalHandlers.push([signal, handler]);
+      process.on(signal, handler);
+    }
   }
 
   close(): void {
@@ -145,7 +169,9 @@ export class Screen {
     this.input.removeListener("end", this.onEof);
     this.input.removeListener("close", this.onEof);
     this.output.off?.("resize", this.resizeHandler);
-    process.removeListener("SIGWINCH", noop);
+    for (const [signal, handler] of this.signalHandlers.splice(0)) {
+      process.removeListener(signal, handler);
+    }
     if (this.restore) process.removeListener("exit", this.restore);
     // Windows: skip rawMode(false) churn issues by only lowering when raised,
     // and detach readline's terminal handling before close (node#31762).
@@ -196,7 +222,8 @@ export class Screen {
   }
 
   private fit(line: string): string {
-    return visualTruncate(line, Math.max(4, this.columns - 1));
+    this.lastWidth = this.columns;
+    return visualTruncate(line, Math.max(4, this.columns - 1), this.ellipsis);
   }
 
   private write(text: string): void {
@@ -208,8 +235,15 @@ export class Screen {
     const sequence = key?.sequence ?? char ?? "";
     const printable =
       sequence.length === 1 && !key?.ctrl && !key?.meta && sequence >= " " ? sequence : null;
+    // Raw mode swallows stream EOF: ctrl+d arrives as a keypress instead,
+    // so it maps to cancel to keep the EOF-as-cancel promise interactively.
     this.deliver({
-      name: key?.ctrl && name === "c" ? "cancel" : name === "escape" ? "escape" : name,
+      name:
+        key?.ctrl && (name === "c" || name === "d")
+          ? "cancel"
+          : name === "escape"
+            ? "escape"
+            : name,
       ctrl: key?.ctrl ?? false,
       meta: key?.meta ?? false,
       shift: key?.shift ?? false,
@@ -218,8 +252,11 @@ export class Screen {
   };
 
   private deliver(key: Key): void {
+    // Cancel jumps the queue: buffered junk is flushed, and the bound can
+    // never drop the one key that must reach a waiter (the CI hang trap).
+    if (key.name === "cancel") this.keyQueue.length = 0;
     if (this.keyListener) this.keyListener(key);
-    else if (this.keyQueue.length < 64) this.keyQueue.push(key);
+    else if (key.name === "cancel" || this.keyQueue.length < 64) this.keyQueue.push(key);
   }
 
   private onEof = (): void => {
@@ -227,5 +264,3 @@ export class Screen {
     this.deliver({ name: "cancel", ctrl: false, meta: false, shift: false, char: null });
   };
 }
-
-function noop(): void {}
