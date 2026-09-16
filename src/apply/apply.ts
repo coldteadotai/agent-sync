@@ -5,6 +5,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  rmdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -27,6 +28,10 @@ export interface Marker {
   manifest: Manifest;
   created: string[];
   updated: string[];
+  // Directories this apply brought into existence (target-relative, sorted).
+  // Absent in pre-0.2 markers; undo prunes only what is recorded here, so a
+  // directory the user made — even an empty one — is never removed.
+  createdDirs?: string[];
   backupDir: string | null;
 }
 
@@ -93,6 +98,17 @@ export function executeApply(bundle: LoadedBundle, targetDir: string, plan: Appl
     }
   }
 
+  // Directories that will come into existence for this apply, recorded before
+  // the first write so undo can prune exactly these and nothing the user made.
+  const createdDirs = new Set<string>();
+  for (const path of [...created, ...updated]) {
+    const parts = path.split("/").slice(0, -1);
+    for (let depth = 1; depth <= parts.length; depth += 1) {
+      const relative = parts.slice(0, depth).join("/");
+      if (!existsSync(resolveInside(targetDir, relative))) createdDirs.add(relative);
+    }
+  }
+
   // The backup and marker land before the first destructive write, so a failure
   // mid-apply still leaves undo with everything it needs.
   const marker: Marker = {
@@ -101,6 +117,7 @@ export function executeApply(bundle: LoadedBundle, targetDir: string, plan: Appl
     manifest: bundle.manifest,
     created,
     updated,
+    createdDirs: [...createdDirs].sort(),
     backupDir,
   };
   writeMarker(targetDir, marker);
@@ -149,6 +166,22 @@ export function undoLast(targetDir: string): UndoResult {
     const destination = resolveForWrite(targetDir, path);
     rmSync(destination, { force: true });
     removed.push(path);
+  }
+
+  // Only directories the apply itself brought into existence are pruned, and
+  // only if they are empty now — a directory the user made, even an empty
+  // one, is never removed. Deepest first, so nested created dirs unwind.
+  // Pre-0.2 markers have no createdDirs and get no pruning.
+  const createdDirs = marker.createdDirs ?? [];
+  const deepestFirst = [...createdDirs].sort(
+    (a, b) => b.split("/").length - a.split("/").length || (a < b ? -1 : 1),
+  );
+  for (const relative of deepestFirst) {
+    try {
+      rmdirSync(resolveInside(targetDir, relative));
+    } catch {
+      // Non-empty (something else lives there now) or already gone: leave it.
+    }
   }
 
   rmSync(join(targetDir, STATE_DIR, "last-applied.json"), { force: true });
