@@ -164,7 +164,7 @@ function exportBundle(name) {
   execFileSync(
     process.execPath,
     ["bin/agent-sync.mjs", "export", dest, "--hook", "hooks.PostToolUse", "--plugin", "ponytail@market"],
-    { cwd: REPO_ROOT, env: { ...process.env, CLAUDE_CONFIG_DIR: userDir, HOME: fakeHome, USERPROFILE: fakeHome } },
+    { cwd: REPO_ROOT, env: { ...process.env, CLAUDE_CONFIG_DIR: userDir, HOME: fakeHome, USERPROFILE: fakeHome, CODEX_HOME: join(fakeHome, ".codex"), XDG_CONFIG_HOME: join(fakeHome, ".config"), XDG_DATA_HOME: join(fakeHome, ".local", "share") } },
   );
   return dest;
 }

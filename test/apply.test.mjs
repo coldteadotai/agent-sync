@@ -36,7 +36,7 @@ function runCli(args, env = {}) {
   return execFileSync(process.execPath, [BIN, ...args], {
     cwd: REPO_ROOT,
     encoding: "utf8",
-    env: { ...process.env, CLAUDE_CONFIG_DIR: sourceDir, HOME: fakeHome, USERPROFILE: fakeHome, ...env },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: sourceDir, HOME: fakeHome, USERPROFILE: fakeHome, CODEX_HOME: join(fakeHome, ".codex"), XDG_CONFIG_HOME: join(fakeHome, ".config"), XDG_DATA_HOME: join(fakeHome, ".local", "share"), ...env },
   });
 }
 
@@ -98,7 +98,7 @@ test("gzip bundles and stdin pipes both apply", () => {
   const pipeTarget = freshTarget("from-pipe");
   execSync(
     `"${process.execPath}" "${BIN}" export - 2>/dev/null | "${process.execPath}" "${BIN}" apply - --target "${pipeTarget}"`,
-    { cwd: REPO_ROOT, env: { ...process.env, CLAUDE_CONFIG_DIR: sourceDir, HOME: fakeHome, USERPROFILE: fakeHome } },
+    { cwd: REPO_ROOT, env: { ...process.env, CLAUDE_CONFIG_DIR: sourceDir, HOME: fakeHome, USERPROFILE: fakeHome, CODEX_HOME: join(fakeHome, ".codex"), XDG_CONFIG_HOME: join(fakeHome, ".config"), XDG_DATA_HOME: join(fakeHome, ".local", "share") } },
   );
   assert.equal(readFileSync(join(pipeTarget, "CLAUDE.md"), "utf8"), "memory v1\n");
 });

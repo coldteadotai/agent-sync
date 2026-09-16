@@ -25,6 +25,9 @@ function runCli(args) {
       ...process.env,
       HOME: fakeHome,
       USERPROFILE: fakeHome,
+      CODEX_HOME: join(fakeHome, ".codex"),
+      XDG_CONFIG_HOME: join(fakeHome, ".config"),
+      XDG_DATA_HOME: join(fakeHome, ".local", "share"),
       CLAUDE_CONFIG_DIR: sourceDir,
       PATH: `${shimDir}:${process.env.PATH}`,
       CLAUDE_SHIM_LOG: shimLog,
@@ -226,7 +229,7 @@ test("one failed registration does not stop the rest and exits 2", () => {
       {
         cwd: REPO_ROOT,
         encoding: "utf8",
-        env: { ...process.env, CLAUDE_CONFIG_DIR: sourceDir, HOME: fakeHome, USERPROFILE: fakeHome, PATH: `${failShimDir}:${process.env.PATH}`, CLAUDE_SHIM_LOG: failLog },
+        env: { ...process.env, CLAUDE_CONFIG_DIR: sourceDir, HOME: fakeHome, USERPROFILE: fakeHome, CODEX_HOME: join(fakeHome, ".codex"), XDG_CONFIG_HOME: join(fakeHome, ".config"), XDG_DATA_HOME: join(fakeHome, ".local", "share"), PATH: `${failShimDir}:${process.env.PATH}`, CLAUDE_SHIM_LOG: failLog },
       },
     );
     assert.fail("expected exit 2");

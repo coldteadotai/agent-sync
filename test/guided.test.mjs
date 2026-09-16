@@ -296,7 +296,7 @@ test("apply withholds bundle plugins unless re-confirmed with --plugin", () => {
   const dest = join(root, "plugin-bundle");
   execFileSync(process.execPath, ["bin/agent-sync.mjs", "export", dest, "--plugin", "ponytail@ponytail-market"], {
     cwd: REPO_ROOT,
-    env: { ...process.env, CLAUDE_CONFIG_DIR: userDir, HOME: fakeHome, USERPROFILE: fakeHome },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: userDir, HOME: fakeHome, USERPROFILE: fakeHome, CODEX_HOME: join(fakeHome, ".codex"), XDG_CONFIG_HOME: join(fakeHome, ".config"), XDG_DATA_HOME: join(fakeHome, ".local", "share") },
   });
 
   const target = join(root, "apply-target");
@@ -398,7 +398,7 @@ test("bare non-TTY invocation keeps the static usage surface", () => {
   const output = execFileSync(process.execPath, ["bin/agent-sync.mjs"], {
     cwd: REPO_ROOT,
     encoding: "utf8",
-    env: { ...process.env, CLAUDE_CONFIG_DIR: userDir, HOME: fakeHome, USERPROFILE: fakeHome },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: userDir, HOME: fakeHome, USERPROFILE: fakeHome, CODEX_HOME: join(fakeHome, ".codex"), XDG_CONFIG_HOME: join(fakeHome, ".config"), XDG_DATA_HOME: join(fakeHome, ".local", "share") },
   });
   assert.match(output, /^Usage: agent-sync/);
   assert.match(output, /guided export/);

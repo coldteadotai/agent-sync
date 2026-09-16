@@ -173,7 +173,17 @@ test("splitBundleByRoot rebases each namespace onto its own root, claude first",
 });
 
 function cliEnv(home) {
-  return { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: join(home, ".claude") };
+  // CI runners export XDG_CONFIG_HOME, which would override the fake HOME's
+  // derived ~/.config; pin every agent-dir source explicitly.
+  return {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
+    CODEX_HOME: join(home, ".codex"),
+    XDG_CONFIG_HOME: join(home, ".config"),
+    XDG_DATA_HOME: join(home, ".local", "share"),
+  };
 }
 
 test("multi-agent apply lands each namespace in its own root, and undo sweeps them all", () => {
