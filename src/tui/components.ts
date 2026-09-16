@@ -219,7 +219,7 @@ export function renderMulti<T>(state: MultiState<T>, theme: Theme, maxRows: numb
   const visible = visibleItems(state);
   const lines: string[] = [];
 
-  const chip = theme.paint("inverse", ` ${state.selected.size} of ${state.items.length} picked `);
+  const chip = theme.paint("highlight", ` ${state.selected.size} of ${state.items.length} picked `);
   lines.push(`${theme.paint("accent", g.stepActive)}  ${theme.paint("bright", state.message)}  ${chip}`);
   if (state.filtering || state.query.length > 0) {
     lines.push(
@@ -247,7 +247,7 @@ export function renderMulti<T>(state: MultiState<T>, theme: Theme, maxRows: numb
     const mark = state.selected.has(item.id) ? g.pickOn : g.pickOff;
     if (active) {
       const content = ` ${mark} ${item.label}`.padEnd(labelWidth).slice(0, labelWidth);
-      rows.push(`${bar} ${theme.paint("inverse", content)}`);
+      rows.push(`${bar} ${theme.paint("highlight", content)}`);
     } else {
       const painted = state.selected.has(item.id) ? theme.paint("ok", mark) : theme.paint("dim", mark);
       rows.push(`${bar}  ${painted} ${item.label}`);

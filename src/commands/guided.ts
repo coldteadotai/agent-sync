@@ -131,17 +131,8 @@ export function buildTravelGroups(report: ScanReport, others: ScanReport[] = [])
       }),
     });
   }
-  if (report.excluded.length > 0) {
-    groups.push({
-      title: "Never leaves this machine",
-      locked: true,
-      items: report.excluded.map((entry) => ({
-        value: entry.path,
-        label: entry.path.split("/").pop() ?? entry.path,
-        hint: entry.reason,
-      })),
-    });
-  }
+  // Exclusions no longer occupy the picker (the owner's call): the review's
+  // closing line accounts for them where the leaves-the-machine story lives.
   return groups;
 }
 
@@ -170,19 +161,20 @@ function factsLines(reports: ScanReport[]): string[] {
     const title = titles[report.agent].padEnd(13);
     const userItems = report.items.filter((item) => item.scope === "user");
     const counts: string[] = [];
-    for (const [kind, label] of [
-      ["skill", "skills"],
-      ["subagent", "subagents"],
-      ["command", "commands"],
-      ["memory", "memory"],
-      ["settings", "settings"],
-      ["hook", "hooks"],
-      ["plugin", "plugins"],
-      ["mcp_server", "MCP servers"],
+    for (const [kind, singular, plural] of [
+      ["skill", "skill", "skills"],
+      ["subagent", "subagent", "subagents"],
+      ["command", "command", "commands"],
+      ["memory", "memory", "memory"],
+      ["settings", "settings", "settings"],
+      ["hook", "hook", "hooks"],
+      ["plugin", "plugin", "plugins"],
+      ["mcp_server", "MCP server", "MCP servers"],
     ] as const) {
       const total = userItems.filter((item) => item.kind === kind).length;
       if (total === 0) continue;
-      counts.push(kind === "settings" || kind === "memory" ? label : `${total} ${label}`);
+      if (kind === "settings" || kind === "memory") counts.push(singular);
+      else counts.push(`${total} ${total === 1 ? singular : plural}`);
     }
     return [`${title} ${counts.length > 0 ? counts.join(" · ") : "nothing to sync"}`];
   });
@@ -220,7 +212,7 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
 
   const groups = buildTravelGroups(report, reports.slice(1));
   const hookGroup = buildHookGroup(report);
-  if (groups.every((group) => group.locked === true) && hookGroup === null) {
+  if (groups.length === 0 && hookGroup === null) {
     io.err("Nothing to sync yet. Run `agent-sync scan` to see what agent-sync looks for.");
     return 0;
   }
@@ -229,7 +221,7 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
   try {
     ui.intro("found on this machine", `carry your agent setup anywhere ${"·"} v${__PKG_VERSION__}`, factsLines(reports));
 
-    const travel = await ui.groupMultiselect("What should travel?", groups);
+    const travel = await ui.groupMultiselect("What goes in the bundle?", groups);
     if (travel === null) return 2;
     const chosen = new Set(travel);
     // Plugins are opt-in (--plugin), everything else is opt-out (--skip), so an
@@ -243,9 +235,9 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
     let hooks: string[] = [];
     if (hookGroup !== null) {
       const picked = await ui.groupMultiselect(
-        "Which hooks may travel?",
+        "Which hooks go in the bundle?",
         [hookGroup],
-        "hooks run shell commands on the target \u00b7 none travel unless you pick them",
+        "hooks run shell commands on the target \u00b7 none go unless you pick them",
       );
       if (picked === null) return 2;
       hooks = picked;

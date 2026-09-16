@@ -104,7 +104,7 @@ export function colorEnabled(options: ThemeEnvironment = {}): boolean {
   return options.isTTY ?? process.stderr.isTTY === true;
 }
 
-export type Style = "accent" | "dim" | "bright" | "warn" | "bad" | "ok" | "strike" | "inverse";
+export type Style = "accent" | "dim" | "bright" | "warn" | "bad" | "ok" | "strike" | "inverse" | "highlight";
 
 const CODES: Record<Style, [string, string]> = {
   accent: ["\x1b[36m", "\x1b[39m"],
@@ -115,7 +115,17 @@ const CODES: Record<Style, [string, string]> = {
   ok: ["\x1b[32m", "\x1b[39m"],
   strike: ["\x1b[9m", "\x1b[29m"],
   inverse: ["\x1b[7m", "\x1b[27m"],
+  highlight: ["\x1b[48;5;236m", "\x1b[49m"],
 };
+
+// A washed-out inverse block reads as glare on dark terminals; where the
+// terminal advertises 256 colors the highlight is a quiet dark-gray band,
+// and elsewhere it falls back to bold rather than inverse.
+export function supports256Colors(options: ThemeEnvironment = {}): boolean {
+  const env = options.env ?? process.env;
+  if (env.COLORTERM !== undefined && env.COLORTERM !== "") return true;
+  return (env.TERM ?? "").includes("256color");
+}
 
 export interface Theme {
   glyphs: Glyphs;
@@ -127,13 +137,14 @@ export interface Theme {
 export function createTheme(options: ThemeEnvironment = {}): Theme {
   const unicode = unicodeSupported(options);
   const color = colorEnabled(options);
+  const deep = supports256Colors(options);
   return {
     glyphs: unicode ? UNICODE : ASCII,
     unicode,
     color,
     paint(style, text) {
       if (!color || text.length === 0) return text;
-      const [open, close] = CODES[style];
+      const [open, close] = style === "highlight" && !deep ? CODES.bright : CODES[style];
       return `${open}${text}${close}`;
     },
   };
