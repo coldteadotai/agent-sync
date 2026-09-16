@@ -60,6 +60,10 @@ export interface Manifest {
   mcpServers: ManifestMcpServer[];
   hooks: ManifestHook[];
   // Additive since 0.2; older applies ignore it, so schemaVersion stays 1.
+  // NOTE: that reasoning no longer extends to settings keys. The receive side
+  // refuses settings.json keys it does not know (assertPortableSettings), so
+  // adding a portable key means older applies refuse newer bundles — bump the
+  // manifest schema when adding one.
   plugins?: ManifestPlugin[];
 }
 
