@@ -362,6 +362,30 @@ test("apply warns when the target's opencode.jsonc would shadow the applied open
   assert.match(output, /opencode\.jsonc, which OpenCode may read instead/);
 });
 
+test("undo prunes directories the apply created, but never one the user still owns", () => {
+  const bundlePath = join(root, "prune.tgz");
+  execFileSync(process.execPath, ["bin/agent-sync.mjs", "export", bundlePath], {
+    cwd: REPO_ROOT,
+    env: cliEnv(sourceHome),
+  });
+  const home = join(root, "prune-home");
+  mkdirSync(join(home, ".claude", "skills"), { recursive: true });
+  writeFileSync(join(home, ".claude", "skills", "keep.txt"), "user file\n");
+  const run = (args) =>
+    execFileSync(process.execPath, ["bin/agent-sync.mjs", ...args], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      env: cliEnv(home),
+    });
+  run(["apply", bundlePath]);
+  assert.ok(existsSync(join(home, ".agents", "skills", "hermes", "SKILL.md")));
+  run(["undo"]);
+  assert.ok(!existsSync(join(home, ".agents", "skills")), "apply-created directory tree must be pruned");
+  assert.ok(existsSync(join(home, ".agents")), "the agent root itself must survive");
+  assert.ok(!existsSync(join(home, ".claude", "skills", "reviewer")), "created skill dir must be pruned");
+  assert.ok(existsSync(join(home, ".claude", "skills", "keep.txt")), "a user's own file must keep its directory");
+});
+
 test("symlink containment holds per agent root", () => {
   const plan = collect();
   const bundle = {

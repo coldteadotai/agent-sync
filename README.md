@@ -6,6 +6,14 @@ Your skills, subagents, slash commands and memory files live in `~/.claude` on o
 
 agent-sync packs the portable part of your setup into a bundle you can read before it goes anywhere, and applies it on the target machine with checks at every step.
 
+## Install
+
+```sh
+npm install -g @coldtea/agent-sync
+```
+
+Node 18 or newer. On Linux with nvm, `npm install -g` places the `agent-sync` binary in the active Node version's own bin directory — if the command is not found afterwards, your PATH is missing that directory; `nvm use` (or adding `$(npm prefix -g)/bin` to PATH) fixes it, and switching Node versions means reinstalling globals for that version.
+
 ## Status
 
 Published as [`@coldtea/agent-sync`](https://www.npmjs.com/package/@coldtea/agent-sync). Four commands and a guided mode:

@@ -5,6 +5,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  rmdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -149,6 +150,22 @@ export function undoLast(targetDir: string): UndoResult {
     const destination = resolveForWrite(targetDir, path);
     rmSync(destination, { force: true });
     removed.push(path);
+  }
+
+  // Directories the apply created become empty once their files are removed;
+  // leaving them behind would make undo less than byte-exact. Pruning walks
+  // each removed file's ancestry and stops at the first non-empty directory,
+  // so anything the user put there themselves keeps its home.
+  for (const path of marker.created) {
+    const parts = path.split("/").slice(0, -1);
+    for (let depth = parts.length; depth > 0; depth -= 1) {
+      const directory = resolveInside(targetDir, parts.slice(0, depth).join("/"));
+      try {
+        rmdirSync(directory);
+      } catch {
+        break;
+      }
+    }
   }
 
   rmSync(join(targetDir, STATE_DIR, "last-applied.json"), { force: true });
