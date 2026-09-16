@@ -3,6 +3,7 @@ import { scanCommand } from "./commands/scan.js";
 import { exportCommand } from "./commands/export.js";
 import { applyCommand } from "./commands/apply.js";
 import { undoCommand } from "./commands/undo.js";
+import { chooseEntry, runGuided } from "./commands/guided.js";
 
 export { classifyMcpServer, isSensitiveKey, sanitizeRemoteEndpoint, scanSecretReferences } from "./scan/classify.js";
 export { planMcpRegistrations } from "./apply/mcp.js";
@@ -16,12 +17,13 @@ export { createFlow, buildMultiState, reduceMulti, renderMulti, visibleItems, ca
 export type { PromptResult, MultiGroup, MultiItem, Flow } from "./tui/components.js";
 export { Plain, plainModeRequested } from "./tui/plain.js";
 export type { ScanReport, ScanItem } from "./scan/types.js";
-export { collectExport, MANIFEST_SCHEMA_VERSION } from "./export/collect.js";
-export type { Manifest, ExportPlan } from "./export/collect.js";
+export { collectExport, skipToken, MANIFEST_SCHEMA_VERSION } from "./export/collect.js";
+export type { Manifest, ManifestPlugin, ExportPlan } from "./export/collect.js";
+export { chooseEntry, runGuided, flagEcho, buildTravelGroups, buildHookGroup } from "./commands/guided.js";
 export { createTar } from "./export/tar.js";
 export { parseTar, validateArchivePath } from "./apply/untar.js";
 export { loadBundleFromBuffer, loadBundleFromDirectory, assertWritablePath } from "./apply/bundle.js";
-export { planApply, executeApply, gateSettingsHooks, undoLast, readMarker, resolveInside, resolveForWrite } from "./apply/apply.js";
+export { planApply, executeApply, gateSettingsHooks, gateSettingsPlugins, undoLast, readMarker, resolveInside, resolveForWrite } from "./apply/apply.js";
 
 declare const __PKG_VERSION__: string;
 
@@ -59,6 +61,12 @@ export const GLOBAL_FLAGS: Record<string, FlagDef> = {
   version: { type: "boolean", description: "Show version" },
 };
 
+const ENTRY_FLAGS: Record<string, FlagDef> = {
+  ...GLOBAL_FLAGS,
+  plain: { type: "boolean", description: "Guided export with plain sequential prompts (no cursor UI)" },
+  "no-input": { type: "boolean", description: "Never prompt; print usage instead" },
+};
+
 export const ALL_COMMANDS: CommandDef[] = [scanCommand, exportCommand, applyCommand, undoCommand];
 
 export function usage(): string {
@@ -71,8 +79,8 @@ export function usage(): string {
       lines.push(`  ${command.word.padEnd(10)} ${command.summary}`);
     }
   }
-  lines.push("", "Flags:");
-  for (const [name, flag] of Object.entries(GLOBAL_FLAGS)) {
+  lines.push("", "Run bare `agent-sync` in a terminal for the guided export.", "", "Flags:");
+  for (const [name, flag] of Object.entries(ENTRY_FLAGS)) {
     lines.push(`  --${name.padEnd(9)} ${flag.description}`);
   }
   return lines.join("\n");
@@ -97,7 +105,7 @@ export async function runCli(argv: string[], io: CommandIo = defaultIo): Promise
 
   let values: Record<string, FlagValue>;
   try {
-    ({ values } = parseArgs({ args: argv, options: GLOBAL_FLAGS, strict: true, allowPositionals: false }));
+    ({ values } = parseArgs({ args: argv, options: ENTRY_FLAGS, strict: true, allowPositionals: false }));
   } catch (error) {
     io.err(error instanceof Error ? error.message : String(error));
     io.err(usage());
@@ -108,6 +116,18 @@ export async function runCli(argv: string[], io: CommandIo = defaultIo): Promise
     io.out(__PKG_VERSION__);
     return 0;
   }
+
+  const mode = chooseEntry({
+    help: values.help === true,
+    version: values.version === true,
+    plain: values.plain === true,
+    noInput: values["no-input"] === true,
+    stdinTTY: process.stdin.isTTY === true,
+    stdoutTTY: process.stdout.isTTY === true,
+    env: process.env,
+  });
+  if (mode !== "static") return runGuided(io, mode);
+
   io.out(usage());
   return 0;
 }

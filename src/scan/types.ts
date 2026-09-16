@@ -18,6 +18,7 @@ export interface ScanItem {
   scope: Scope;
   status: SyncStatus;
   reason: string;
+  detail?: string;
   envRefs?: string[];
   url?: string;
   transport?: "http" | "sse";

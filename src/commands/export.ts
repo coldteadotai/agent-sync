@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
-import type { CommandDef, ExitCode } from "../main.js";
+import type { CommandDef, ExitCode, FlagValue } from "../main.js";
 import { collectExport, type ExportPlan } from "../export/collect.js";
 import { createTar, type TarEntry } from "../export/tar.js";
 
@@ -12,10 +12,12 @@ const HELP = [
   "dest is a directory, a .tar or .tgz file, or - for a tar stream on stdout.",
   "",
   "Flags:",
-  "  --hook <name>   Include one confirmed hook (repeatable), e.g. --hook hooks.PostToolUse",
-  "  --dry-run       Print exactly what would be packed and write nothing",
-  "  --json          Print the manifest as JSON instead of the summary",
-  "  --help          Show help",
+  "  --hook <name>    Include one confirmed hook (repeatable), e.g. --hook hooks.PostToolUse",
+  "  --plugin <name>  Include one plugin reference (repeatable), e.g. --plugin ponytail@ponytail",
+  "  --skip <item>    Leave one scanned item behind (repeatable), e.g. --skip skill/boxd-cli or --skip settings",
+  "  --dry-run        Print exactly what would be packed and write nothing",
+  "  --json           Print the manifest as JSON instead of the summary",
+  "  --help           Show help",
 ].join("\n");
 
 export const exportCommand: CommandDef = {
@@ -24,6 +26,8 @@ export const exportCommand: CommandDef = {
   help: HELP,
   flags: {
     hook: { type: "string", description: "Include one confirmed hook (repeatable)", multiple: true },
+    plugin: { type: "string", description: "Include one plugin reference (repeatable)", multiple: true },
+    skip: { type: "string", description: "Leave one scanned item behind (repeatable)", multiple: true },
     "dry-run": { type: "boolean", description: "Print the packing list and write nothing" },
     json: { type: "boolean", description: "Print the manifest as JSON" },
   },
@@ -39,14 +43,11 @@ export const exportCommand: CommandDef = {
       return 2;
     }
 
-    const hookValues = values.hook;
-    const confirmedHooks = Array.isArray(hookValues)
-      ? hookValues.filter((value): value is string => typeof value === "string")
-      : typeof hookValues === "string"
-        ? [hookValues]
-        : [];
+    const confirmedHooks = stringList(values.hook);
+    const selectedPlugins = stringList(values.plugin);
+    const skips = stringList(values.skip);
 
-    const plan = collectExport({ confirmedHooks });
+    const plan = collectExport({ confirmedHooks, selectedPlugins, skips });
 
     if (plan.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
       for (const diagnostic of plan.diagnostics) io.err(`${diagnostic.severity}: ${diagnostic.message}`);
@@ -54,7 +55,9 @@ export const exportCommand: CommandDef = {
     }
     const manifestOnly =
       plan.entries.length === 0 &&
-      (plan.manifest.mcpServers.length > 0 || plan.manifest.hooks.length > 0);
+      (plan.manifest.mcpServers.length > 0 ||
+        plan.manifest.hooks.length > 0 ||
+        (plan.manifest.plugins?.length ?? 0) > 0);
     if (plan.entries.length === 0 && !manifestOnly) {
       io.err("export: nothing to pack. Run `agent-sync scan` to see what exists.");
       return 2;
@@ -94,7 +97,12 @@ export const exportCommand: CommandDef = {
   },
 };
 
-function buildTar(plan: ExportPlan, manifestBytes: Buffer): Buffer {
+export function stringList(value: FlagValue): string[] {
+  if (Array.isArray(value)) return value.filter((entry): entry is string => typeof entry === "string");
+  return typeof value === "string" ? [value] : [];
+}
+
+export function buildTar(plan: ExportPlan, manifestBytes: Buffer): Buffer {
   const entries: TarEntry[] = [{ path: "manifest.json", content: manifestBytes }];
   const directories = new Set<string>(["files"]);
   for (const entry of plan.entries) {
@@ -108,7 +116,7 @@ function buildTar(plan: ExportPlan, manifestBytes: Buffer): Buffer {
   return createTar(entries);
 }
 
-function writeBundleDirectory(dest: string, plan: ExportPlan, manifestBytes: Buffer): void {
+export function writeBundleDirectory(dest: string, plan: ExportPlan, manifestBytes: Buffer): void {
   mkdirSync(dest, { recursive: true });
   writeFileSync(join(dest, "manifest.json"), manifestBytes);
   for (const entry of plan.entries) {
@@ -131,6 +139,15 @@ function renderPlan(plan: ExportPlan, dryRun: boolean): string {
     lines.push("", "Hooks:");
     for (const hook of plan.manifest.hooks) {
       lines.push(`  ${hook.name} — ${hook.included ? "included (confirmed via --hook)" : "left behind (pass --hook to include)"}`);
+    }
+  }
+  const plugins = plan.manifest.plugins ?? [];
+  if (plugins.length > 0) {
+    lines.push("", "Plugins:");
+    for (const plugin of plugins) {
+      lines.push(
+        `  ${plugin.name} — ${plugin.included ? "included (reference only, confirmed via --plugin)" : "left behind (pass --plugin to include)"}`,
+      );
     }
   }
   if (plan.manifest.mcpServers.length > 0) {

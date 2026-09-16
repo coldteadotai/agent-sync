@@ -220,6 +220,84 @@ export function gateSettingsHooks(bundle: LoadedBundle, confirmedHooks: string[]
   return withheld;
 }
 
+// Enabling a plugin makes the target install and run marketplace code, so the
+// receiving machine re-confirms each one, exactly as it does for hooks.
+// Anything not named in confirmedPlugins is stripped from the bundle's
+// settings.json, along with marketplaces no surviving plugin references.
+export function gateSettingsPlugins(bundle: LoadedBundle, confirmedPlugins: string[]): string[] {
+  const entry = bundle.files.get("settings.json");
+  if (entry === undefined) {
+    if (confirmedPlugins.length > 0) throw new Error("--plugin given but the bundle carries no settings.json.");
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(entry.content.toString("utf8"));
+  } catch {
+    throw new Error("Refusing bundle: settings.json is not valid JSON.");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Refusing bundle: settings.json is not an object.");
+  }
+  const settings = parsed as Record<string, unknown>;
+
+  const enabled = settings.enabledPlugins;
+  const pluginNames =
+    enabled !== null && enabled !== undefined && typeof enabled === "object" && !Array.isArray(enabled)
+      ? Object.keys(enabled as Record<string, unknown>)
+      : [];
+  for (const requested of confirmedPlugins) {
+    if (!pluginNames.includes(requested)) {
+      throw new Error(`--plugin ${requested} does not match anything in this bundle.`);
+    }
+  }
+  if (pluginNames.length === 0) return [];
+
+  const confirmed = new Set(confirmedPlugins);
+  const withheld: string[] = [];
+  const kept: Record<string, unknown> = {};
+  for (const name of pluginNames.sort()) {
+    if (confirmed.has(name)) kept[name] = (enabled as Record<string, unknown>)[name];
+    else withheld.push(name);
+  }
+  if (withheld.length === 0) return [];
+
+  if (Object.keys(kept).length > 0) settings.enabledPlugins = kept;
+  else delete settings.enabledPlugins;
+
+  const marketplaces = settings.extraKnownMarketplaces;
+  if (marketplaces !== null && marketplaces !== undefined && typeof marketplaces === "object" && !Array.isArray(marketplaces)) {
+    const referenced = new Set(
+      Object.keys(kept)
+        .map((name) => name.split("@")[1])
+        .filter((name): name is string => name !== undefined),
+    );
+    const keptMarketplaces: Record<string, unknown> = {};
+    for (const [name, source] of Object.entries(marketplaces as Record<string, unknown>)) {
+      if (referenced.has(name)) keptMarketplaces[name] = source;
+    }
+    if (Object.keys(keptMarketplaces).length > 0) settings.extraKnownMarketplaces = keptMarketplaces;
+    else delete settings.extraKnownMarketplaces;
+  }
+
+  if (Object.keys(settings).length === 0) {
+    bundle.files.delete("settings.json");
+    bundle.manifest.files = bundle.manifest.files.filter((file) => file.path !== "settings.json");
+  } else {
+    const ordered = Object.fromEntries(Object.entries(settings).sort(([a], [b]) => (a < b ? -1 : 1)));
+    const content = Buffer.from(`${JSON.stringify(ordered, null, 2)}\n`, "utf8");
+    bundle.files.set("settings.json", { content, executable: false });
+    for (const file of bundle.manifest.files) {
+      if (file.path === "settings.json") {
+        file.sha256 = createHash("sha256").update(content).digest("hex");
+        file.size = content.length;
+      }
+    }
+  }
+  return withheld;
+}
+
 export function readMarker(targetDir: string): Marker | null {
   const markerPath = join(targetDir, STATE_DIR, "last-applied.json");
   if (!existsSync(markerPath)) return null;

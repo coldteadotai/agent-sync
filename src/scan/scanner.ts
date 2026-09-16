@@ -196,26 +196,93 @@ function scanSettingsFile(path: string, scope: Scope, items: ScanItem[], diagnos
 
   // statusLine.command and every hook run arbitrary shell on the target machine.
   if ("statusLine" in settings) {
-    items.push({
+    const item: ScanItem = {
       name: "settings.statusLine",
       kind: "hook",
       scope,
       status: "blocked",
       reason: "Runs a shell command; syncs only after explicit confirmation during export.",
-    });
+    };
+    const command = commandSummary([settings.statusLine ?? null]);
+    if (command !== null) item.detail = command;
+    items.push(item);
   }
   const hooks = settings.hooks;
   if (hooks !== null && typeof hooks === "object" && !Array.isArray(hooks)) {
     for (const event of Object.keys(hooks).sort()) {
-      items.push({
+      const item: ScanItem = {
         name: `hooks.${event}`,
         kind: "hook",
         scope,
         status: "blocked",
         reason: "Hooks are shell commands; each syncs only after explicit confirmation during export.",
-      });
+      };
+      const command = commandSummary([hooks[event] ?? null]);
+      if (command !== null) item.detail = command;
+      items.push(item);
     }
   }
+
+  // Plugins are declarative name@marketplace references: only the name and the
+  // marketplace source ever travel, never plugin code.
+  const enabled = asObject(settings.enabledPlugins ?? null);
+  if (enabled !== null) {
+    const marketplaces = asObject(settings.extraKnownMarketplaces ?? null);
+    for (const name of Object.keys(enabled).sort()) {
+      if (enabled[name] !== true) continue;
+      const item: ScanItem = {
+        name,
+        kind: "plugin",
+        scope,
+        status: "candidate",
+        reason: "Declarative plugin reference; re-installed by name on the target, code never travels.",
+      };
+      const marketplaceName = name.split("@")[1];
+      const source =
+        marketplaceName !== undefined && marketplaces !== null
+          ? marketplaceSummary(marketplaces[marketplaceName] ?? null)
+          : null;
+      if (source !== null) item.detail = source;
+      items.push(item);
+    }
+  }
+}
+
+// Digs the first "command" string out of a hook/statusLine config for display.
+function commandSummary(values: (JsonValue | undefined)[]): string | null {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string") return truncateDetail(value);
+    if (Array.isArray(value)) {
+      const found = commandSummary(value);
+      if (found !== null) return found;
+      continue;
+    }
+    if (typeof value === "object") {
+      const record = value;
+      if (typeof record.command === "string") return truncateDetail(record.command);
+      const found = commandSummary(Object.values(record));
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
+function marketplaceSummary(value: JsonValue | null): string | null {
+  const record = asObject(value);
+  if (record === null) return null;
+  const source = asObject(record.source ?? null);
+  if (source === null) return null;
+  for (const key of ["repo", "url", "path"]) {
+    const candidate = source[key];
+    if (typeof candidate === "string") return truncateDetail(candidate);
+  }
+  return null;
+}
+
+function truncateDetail(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > 80 ? `${flat.slice(0, 77)}...` : flat;
 }
 
 function scanMcpConfig(

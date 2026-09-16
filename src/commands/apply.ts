@@ -3,8 +3,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CommandDef, ExitCode } from "../main.js";
 import { loadBundleFromBuffer, loadBundleFromDirectory, type LoadedBundle } from "../apply/bundle.js";
-import { executeApply, gateSettingsHooks, planApply } from "../apply/apply.js";
+import { executeApply, gateSettingsHooks, gateSettingsPlugins, planApply } from "../apply/apply.js";
 import { planMcpRegistrations, runMcpRegistration } from "../apply/mcp.js";
+import { stringList } from "./export.js";
 
 const HELP = [
   "Usage: agent-sync apply <bundle> [flags]",
@@ -14,15 +15,17 @@ const HELP = [
   "backed up first so `agent-sync undo` can put it back.",
   "bundle is a directory, a .tar or .tgz file, or - for a tar stream on stdin.",
   "",
-  "Hooks and statusLine in a bundle run shell commands, so they apply only when",
-  "re-confirmed here with --hook, mirroring the confirmation export required.",
+  "Hooks and statusLine in a bundle run shell commands, and an enabled plugin",
+  "installs marketplace code, so each applies only when re-confirmed here with",
+  "--hook or --plugin, mirroring the confirmation export required.",
   "",
   "Flags:",
-  "  --target <dir>  Directory to apply into (default: ~/.claude, honoring CLAUDE_CONFIG_DIR)",
-  "  --hook <name>   Re-confirm one hook from the bundle (repeatable), e.g. --hook hooks.PostToolUse",
-  "  --mcp <name>    Register one portable MCP server via `claude mcp add` (repeatable, name + URL only)",
-  "  --dry-run       Print what would change and write nothing",
-  "  --help          Show help",
+  "  --target <dir>   Directory to apply into (default: ~/.claude, honoring CLAUDE_CONFIG_DIR)",
+  "  --hook <name>    Re-confirm one hook from the bundle (repeatable), e.g. --hook hooks.PostToolUse",
+  "  --plugin <name>  Re-confirm one plugin reference from the bundle (repeatable)",
+  "  --mcp <name>     Register one portable MCP server via `claude mcp add` (repeatable, name + URL only)",
+  "  --dry-run        Print what would change and write nothing",
+  "  --help           Show help",
 ].join("\n");
 
 export const applyCommand: CommandDef = {
@@ -32,6 +35,7 @@ export const applyCommand: CommandDef = {
   flags: {
     target: { type: "string", description: "Directory to apply into" },
     hook: { type: "string", description: "Re-confirm one hook from the bundle (repeatable)", multiple: true },
+    plugin: { type: "string", description: "Re-confirm one plugin reference from the bundle (repeatable)", multiple: true },
     mcp: { type: "string", description: "Register one portable MCP server from the manifest (repeatable)", multiple: true },
     "dry-run": { type: "boolean", description: "Print what would change and write nothing" },
   },
@@ -46,24 +50,18 @@ export const applyCommand: CommandDef = {
         ? values.target
         : (process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"));
 
-    const hookValues = values.hook;
-    const confirmedHooks = Array.isArray(hookValues)
-      ? hookValues.filter((value): value is string => typeof value === "string")
-      : typeof hookValues === "string"
-        ? [hookValues]
-        : [];
-
-    const mcpValues = values.mcp;
-    const requestedMcp = Array.isArray(mcpValues)
-      ? mcpValues.filter((value): value is string => typeof value === "string")
-      : typeof mcpValues === "string"
-        ? [mcpValues]
-        : [];
+    const confirmedHooks = stringList(values.hook);
+    const confirmedPlugins = stringList(values.plugin);
+    const requestedMcp = stringList(values.mcp);
 
     const bundle = await loadBundle(source);
     const withheld = gateSettingsHooks(bundle, confirmedHooks);
     for (const name of withheld) {
       io.out(`Withheld ${name}: hooks run shell commands, so re-confirm with --hook ${name} to apply it.`);
+    }
+    const withheldPlugins = gateSettingsPlugins(bundle, confirmedPlugins);
+    for (const name of withheldPlugins) {
+      io.out(`Withheld plugin ${name}: enabling installs marketplace code, so re-confirm with --plugin ${name} to apply it.`);
     }
     // Registrations are validated before any file write so a bad --mcp refuses
     // the whole apply, not half of it.
