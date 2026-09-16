@@ -356,7 +356,8 @@ test("guided picker flow: accepting every default writes setup.tgz and echoes th
   assert.ok(!("hooks" in settings), "hooks are opt-in and none were selected");
 
   const rendered = fake.chunks.join("");
-  assert.match(rendered, /Never leaves this machine/);
+  assert.match(rendered, /never leaves? this machine/);
+  assert.match(rendered, /This is what leaves the machine/);
   assert.match(rendered, /agent-sync export setup\.tgz/);
 });
 
@@ -391,6 +392,90 @@ test("guided flow cancel writes nothing and exits 2", async () => {
     fake.input.emit("keypress", undefined, { name: "c", ctrl: true, sequence: "\x03" });
   });
   assert.equal(await running, 2);
+  assert.ok(!existsSync(join(destDir, "setup.tgz")));
+});
+
+test("wordmark renders three half-block rows in unicode and bold text in ascii or narrow terminals", async () => {
+  const { createTheme, wordmarkLines } = await import("../dist/main.js");
+  const unicode = createTheme({ env: { TERM: "xterm-256color" }, platform: "darwin", isTTY: false });
+  const rows = wordmarkLines(unicode, 120);
+  assert.equal(rows.length, 3);
+  assert.ok(rows.every((row) => /^[█▀▄ ]+$/.test(row)), "half-block cells only");
+  const widths = new Set(rows.map((row) => row.replace(/\s+$/, "").length <= rows[0].length));
+  assert.ok(widths.has(true));
+
+  const narrow = wordmarkLines(unicode, 30);
+  assert.deepEqual(narrow, ["AGENT SYNC"]);
+  const ascii = createTheme({ env: { TERM: "linux" }, platform: "linux", isTTY: false });
+  assert.deepEqual(wordmarkLines(ascii, 120), ["AGENT SYNC"]);
+});
+
+test("the review tree aggregates skill dirs, names config keys, and accounts for consents", async () => {
+  const { buildReviewLines } = await import("../dist/main.js");
+  const entry = (path, content) => ({ path, content: Buffer.from(content), executable: false });
+  const plan = {
+    entries: [
+      entry("CLAUDE.md", "memory\n"),
+      entry("settings.json", JSON.stringify({ model: "opus", theme: "dark" })),
+      entry("skills/boxd-cli/SKILL.md", "# a\n"),
+      entry("skills/boxd-cli/guide.md", "guide\n"),
+      entry("codex/config.toml", 'model = "gpt"\n'),
+      entry("codex/skills/hermes/SKILL.md", "# h\n"),
+    ],
+    manifest: {},
+    skipped: [],
+    secretFindings: [],
+    diagnostics: [],
+  };
+  const lines = buildReviewLines(plan, ["hooks.PostToolUse"], [], 5);
+  const text = lines.join("\n");
+  assert.match(text, /CLAUDE\.md\s+memory/);
+  assert.match(text, /settings\.json\s+model, theme/);
+  assert.match(text, /boxd-cli\/\s+2 files/);
+  assert.match(text, /config\.toml\s+model/);
+  assert.match(text, /hermes\/\s+1 files/);
+  assert.match(text, /manifest\.json\s+hashes for every file above/);
+  assert.match(text, /hooks: hooks\.PostToolUse \| plugins: none \| 5 excluded items stayed behind/);
+});
+
+test("review keys: n leaves nothing written, d changes the destination", async () => {
+  const destDir = join(root, "review-keys-out");
+  mkdirSync(destDir, { recursive: true });
+  const io = { out: () => {}, err: () => {} };
+  const overrides = {
+    userDir,
+    claudeJsonPath,
+    codexHome: join(fakeHome, ".codex"),
+    codexAgentsDir: join(fakeHome, ".agents"),
+    opencodeConfigDir: join(fakeHome, ".config", "opencode"),
+    destDir,
+    env: {},
+  };
+
+  const first = fakeScreenIo();
+  const declining = runGuided(io, "picker", { ...overrides, screen: new Screen({ input: first.input, output: first.output }) });
+  setImmediate(() => {
+    const press = (char, name) => first.input.emit("keypress", char, { name, sequence: char ?? "\r" });
+    press(undefined, "return"); // travel
+    press(undefined, "return"); // hooks
+    press("n", "n"); // review: do not pack
+  });
+  assert.equal(await declining, 0);
+  assert.ok(!existsSync(join(destDir, "setup.tgz")), "n must write nothing");
+
+  const second = fakeScreenIo();
+  const switching = runGuided(io, "picker", { ...overrides, screen: new Screen({ input: second.input, output: second.output }) });
+  setImmediate(() => {
+    const press = (char, name) => second.input.emit("keypress", char, { name, sequence: char ?? "\r" });
+    press(undefined, "return"); // travel
+    press(undefined, "return"); // hooks
+    press("d", "d"); // review: change destination
+    press(undefined, "down");
+    press(undefined, "return"); // pick setup.tar
+    press("y", "y"); // review again: pack
+  });
+  assert.equal(await switching, 0);
+  assert.ok(existsSync(join(destDir, "setup.tar")), "d then select must retarget the write");
   assert.ok(!existsSync(join(destDir, "setup.tgz")));
 });
 

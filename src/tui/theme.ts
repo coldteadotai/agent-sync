@@ -18,6 +18,8 @@ export interface Glyphs {
   sep: string;
   ellipsis: string;
   rule: string;
+  pickOn: string;
+  pickOff: string;
 }
 
 const UNICODE: Glyphs = {
@@ -40,6 +42,8 @@ const UNICODE: Glyphs = {
   sep: "·",
   ellipsis: "…",
   rule: "─",
+  pickOn: "●",
+  pickOff: "○",
 };
 
 const ASCII: Glyphs = {
@@ -62,6 +66,8 @@ const ASCII: Glyphs = {
   sep: "-",
   ellipsis: "...",
   rule: "-",
+  pickOn: "[x]",
+  pickOff: "[ ]",
 };
 
 export interface ThemeEnvironment {

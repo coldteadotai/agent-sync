@@ -110,16 +110,30 @@ test("required blocks empty submit with an error", () => {
   assert.match(state.error, /at least one/);
 });
 
-test("renderMulti shows counts, locked section, footer, and windows long lists", () => {
+test("renderMulti shows chip, coach, collapsed locked line, short footer, and windows long lists", () => {
   const theme = asciiTheme();
   const state = buildMultiState("What should travel?", GROUPS);
   const frame = renderMulti(state, theme, 24).join("\n");
   assert.match(frame, /What should travel\?/);
-  assert.match(frame, /0 of 3 selected/);
-  assert.match(frame, /Never leaves this machine/);
-  assert.match(frame, /x \.credentials\.json/);
-  assert.match(frame, /Credentials never sync\./);
-  assert.match(frame, /enter confirm/);
+  assert.match(frame, /0 of 3 picked/);
+  assert.match(frame, /space picks - enter continues with what is checked/);
+  assert.match(frame, /1 item never leaves this machine - v to view/);
+  assert.ok(!frame.includes(".credentials.json"), "locked items hide until v expands them");
+  assert.match(frame, /space pick - enter continue - \? keys/);
+  assert.ok(!frame.includes("i invert"), "the long bindings hide behind ?");
+
+  reduceMulti(state, press("v"));
+  const expanded = renderMulti(state, theme, 24).join("\n");
+  assert.match(expanded, /x \.credentials\.json/);
+  assert.match(expanded, /v to hide/);
+
+  reduceMulti(state, press("?"));
+  assert.match(renderMulti(state, theme, 24).join("\n"), /i invert/);
+
+  reduceMulti(state, key("space"));
+  const touched = renderMulti(state, theme, 24).join("\n");
+  assert.ok(!touched.includes("space picks - enter continues"), "the coach line retires after the first toggle");
+  assert.match(touched, /1 of 3 picked/);
 
   const many = [{ title: "Big", items: Array.from({ length: 40 }, (_, i) => ({ value: i, label: `item-${i}` })) }];
   const bigState = buildMultiState("big", many);
@@ -285,14 +299,15 @@ test("filtered bulk operations touch only visible items", () => {
   assert.equal(zero.selected.size, 0, "invert with zero matches is a no-op");
 });
 
-test("group headers survive filtering", () => {
+test("group headers survive filtering, and the filter line shows the match count", () => {
   const theme = asciiTheme();
   const state = buildMultiState("pick", GROUPS);
   reduceMulti(state, press("/"));
   reduceMulti(state, press("p"));
   const frame = renderMulti(state, theme, 24).join("\n");
-  assert.match(frame, /-- Plugins /);
+  assert.match(frame, /Plugins/);
   assert.match(frame, /ponytail/);
+  assert.match(frame, /1\/3 match/);
 });
 
 test("locked section collapses to one line before controls are cut", () => {
@@ -306,11 +321,13 @@ test("locked section collapses to one line before controls are cut", () => {
     },
   ];
   const state = buildMultiState("pick", bigLocked);
+  reduceMulti(state, press("v"));
   const frame = renderMulti(state, theme, 10);
   assert.ok(frame.length <= 10 + 3, "frame respects the budget with slack for the min list");
   const text = frame.join("\n");
-  assert.match(text, /10 item\(s\) never leave this machine/);
-  assert.match(text, /enter confirm/, "footer survived");
+  assert.match(text, /10 items never leave this machine/);
+  assert.ok(!text.includes("secret-0"), "a tight budget forces the locked section back to one line");
+  assert.match(text, /enter continue/, "footer survived");
 });
 
 test("keypress decoding from raw escape bytes via the real decoder", async () => {
@@ -355,14 +372,15 @@ test("the design-page picker frame renders as specified (ascii snapshot)", () =>
       items: [{ value: "x", label: ".credentials.json", hint: "credentials never sync" }],
     },
   ]);
-  assert.deepEqual(renderMulti(state, theme, 24), [
-    "*  What should travel?  1 of 1 selected",
-    "|  -- Skills ------------------------------------",
-    "|  > [x] boxd-cli",
-    "|  -- Never leaves this machine -----------------",
-    "|  x .credentials.json  credentials never sync",
-    "|    Credentials never sync.",
-    "+  up/down move - space select - tab next - a group - i invert - / filter - enter confirm",
+  assert.deepEqual(renderMulti(state, theme, 24, 40), [
+    "*  What should travel?   1 of 1 picked ",
+    "|  space picks - enter continues with what is checked",
+    "|",
+    "|  Skills",
+    `| ${" [x] boxd-cli".padEnd(34)}`,
+    "|",
+    "|  x 1 item never leaves this machine - v to view",
+    "+  space pick - enter continue - ? keys",
   ]);
 });
 
