@@ -1,5 +1,5 @@
 {
-  "name": "agent-sync",
+  "name": "@coldtea/agent-sync",
   "version": "0.1.0",
   "description": "Carry your AI agent setup to any machine. No daemon, no server, no secrets synced.",
   "license": "MIT",
