@@ -413,11 +413,16 @@ export function buildReviewLines(
     }
   }
   lines.push(pad("manifest.json", "hashes for every file above", ""));
+  // The manifest's MCP entries leave the machine too (names and sanitized
+  // URLs, never secrets), so the accounting names them — the drawing's
+  // "mcp servers recorded by name" line, restored.
+  const mcpNames = plan.manifest.mcpServers.map((server) => server.name);
   lines.push("");
   lines.push(
-    `hooks: ${hooks.length > 0 ? hooks.join(", ") : "none"} | plugins: ${
-      plugins.length > 0 ? plugins.join(", ") : "none"
-    } | ${excludedCount} excluded item${excludedCount === 1 ? "" : "s"} stayed behind`,
+    `hooks: ${hooks.length > 0 ? hooks.join(", ") : "none"} | plugins: ${plugins.length > 0 ? plugins.join(", ") : "none"}`,
+  );
+  lines.push(
+    `mcp servers recorded by name: ${mcpNames.length > 0 ? mcpNames.join(", ") : "none"} | ${excludedCount} excluded item${excludedCount === 1 ? "" : "s"} stayed behind`,
   );
   return lines;
 }

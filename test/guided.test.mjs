@@ -424,7 +424,7 @@ test("the review tree aggregates skill dirs, names config keys, and accounts for
       entry("codex/config.toml", 'model = "gpt"\n'),
       entry("codex/skills/hermes/SKILL.md", "# h\n"),
     ],
-    manifest: {},
+    manifest: { mcpServers: [{ name: "linear" }] },
     skipped: [],
     secretFindings: [],
     diagnostics: [],
@@ -437,7 +437,8 @@ test("the review tree aggregates skill dirs, names config keys, and accounts for
   assert.match(text, /config\.toml\s+model/);
   assert.match(text, /hermes\/\s+1 files/);
   assert.match(text, /manifest\.json\s+hashes for every file above/);
-  assert.match(text, /hooks: hooks\.PostToolUse \| plugins: none \| 5 excluded items stayed behind/);
+  assert.match(text, /hooks: hooks\.PostToolUse \| plugins: none/);
+  assert.match(text, /mcp servers recorded by name: linear \| 5 excluded items stayed behind/);
 });
 
 test("the review tree never prints TOML values, section headers, or array elements", async () => {
@@ -453,7 +454,7 @@ test("the review tree never prints TOML values, section headers, or array elemen
   ].join("\n");
   const plan = {
     entries: [{ path: "codex/config.toml", content: Buffer.from(toml), executable: false }],
-    manifest: {},
+    manifest: { mcpServers: [] },
     skipped: [],
     secretFindings: [],
     diagnostics: [],
