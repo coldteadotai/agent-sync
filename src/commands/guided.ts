@@ -149,7 +149,12 @@ export function buildHookGroup(report: ScanReport): MultiGroup<string> | null {
   };
 }
 
-function factsLines(reports: ScanReport[]): string[] {
+interface AgentFact {
+  name: string;
+  summary: string;
+}
+
+function agentFacts(reports: ScanReport[]): AgentFact[] {
   const titles: Record<ScanReport["agent"], string> = {
     "claude-code": "Claude Code",
     codex: "Codex",
@@ -158,7 +163,7 @@ function factsLines(reports: ScanReport[]): string[] {
   return reports.flatMap((report) => {
     // Absent agents are simply not mentioned; the card lists what IS here.
     if (!report.present) return [];
-    const title = titles[report.agent].padEnd(13);
+    const name = titles[report.agent];
     const userItems = report.items.filter((item) => item.scope === "user");
     const counts: string[] = [];
     for (const [kind, singular, plural] of [
@@ -176,7 +181,7 @@ function factsLines(reports: ScanReport[]): string[] {
       if (kind === "settings" || kind === "memory") counts.push(singular);
       else counts.push(`${total} ${total === 1 ? singular : plural}`);
     }
-    return [`${title} ${counts.length > 0 ? counts.join(" · ") : "nothing to sync"}`];
+    return [{ name, summary: counts.length > 0 ? counts.join(" \u00b7 ") : "nothing to sync" }];
   });
 }
 
@@ -219,7 +224,7 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
 
   const ui = mode === "picker" ? pickerUi({ ...overrides, wordmark: true }) : plainUi(io, overrides);
   try {
-    ui.intro("found on this machine", `carry your agent setup anywhere ${"·"} v${__PKG_VERSION__}`, factsLines(reports));
+    ui.intro("found on this machine", `carry your agent setup anywhere ${"\u00b7"} v${__PKG_VERSION__}`, agentFacts(reports));
 
     const travel = await ui.groupMultiselect("What goes in the bundle?", groups);
     if (travel === null) return 2;
@@ -626,7 +631,7 @@ export async function runGuidedApply(
 
 // Both modes speak the same verbs; null means the user cancelled.
 interface GuidedUi {
-  intro(title: string, subtitle: string, facts: string[]): void;
+  intro(title: string, subtitle: string, facts: { name: string; summary: string }[]): void;
   note(lines: string[]): void;
   groupMultiselect(message: string, groups: MultiGroup<string>[], coach?: string): Promise<string[] | null>;
   select(message: string, items: typeof DESTINATIONS): Promise<string | null>;
@@ -657,7 +662,9 @@ function pickerUi(overrides: GuidedOverrides & { wordmark?: boolean }): GuidedUi
         flow.intro(title, subtitle);
         open = true;
       }
-      if (facts.length > 0) flow.note(facts);
+      if (facts.length > 0) {
+        flow.note(facts.map((fact) => `${fact.name.padEnd(13)} ${theme.paint("dim", fmt(fact.summary))}`));
+      }
     },
     note(lines) {
       flow.note(lines);
@@ -744,7 +751,7 @@ function plainUi(io: CommandIo, overrides: GuidedOverrides): GuidedUi {
   return {
     intro(title, subtitle, facts) {
       plain.say(`${title} - ${fmt(subtitle)} (plain mode)`);
-      for (const fact of facts) plain.say(fact);
+      for (const fact of facts) plain.say(`${fact.name.padEnd(13)} ${fmt(fact.summary)}`);
       plain.say("");
     },
     note(lines) {
