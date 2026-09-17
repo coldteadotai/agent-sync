@@ -149,7 +149,10 @@ test("mcp servers are classified without values", () => {
 
 test("local-scope servers nested under projects are found", () => {
   assert.equal(item("nestedremote").status, "candidate");
+  // python3 serve.py resolves against a working directory that only exists
+  // here, so the bare-script guard keeps it blocked.
   assert.equal(item("nestedlocal").status, "blocked");
+  assert.equal(item("nestedlocal").stdio, undefined);
 });
 
 test("a dollar sign inside a secret value never emits a fragment env ref", () => {

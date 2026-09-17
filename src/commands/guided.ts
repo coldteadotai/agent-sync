@@ -15,7 +15,7 @@ import {
   type AgentRoots,
 } from "../apply/apply.js";
 import type { LoadedBundle } from "../apply/bundle.js";
-import { planMcpRegistrations, runMcpRegistration, type McpRegistration } from "../apply/mcp.js";
+import { commandOnPath, planMcpRegistrations, runMcpRegistration, type McpRegistration } from "../apply/mcp.js";
 import type { JsonValue } from "../scan/classify.js";
 import { commandSummary, scanClaudeCode } from "../scan/scanner.js";
 import { scanCodex } from "../scan/codex.js";
@@ -58,6 +58,7 @@ interface Selections {
   skips: string[];
   plugins: string[];
   hooks: string[];
+  mcp?: string[];
   allowSecrets?: string[];
   dest: string;
 }
@@ -69,6 +70,7 @@ export function flagEcho(selections: Selections): string {
   for (const skip of [...selections.skips].sort()) parts.push("--skip", quote(skip));
   for (const plugin of [...selections.plugins].sort()) parts.push("--plugin", quote(plugin));
   for (const hook of [...selections.hooks].sort()) parts.push("--hook", quote(hook));
+  for (const server of [...(selections.mcp ?? [])].sort()) parts.push("--mcp", quote(server));
   for (const path of [...(selections.allowSecrets ?? [])].sort()) parts.push("--allow-secret", quote(path));
   return parts.join(" ");
 }
@@ -131,7 +133,28 @@ export function buildTravelGroups(report: ScanReport, others: ScanReport[] = [])
       }),
     });
   }
-  // Exclusions no longer occupy the picker (the owner's call): the review's
+  const stdioServers = report.items.filter(
+    (item) => item.scope === "user" && item.kind === "mcp_server" && item.stdio !== undefined,
+  );
+  if (stdioServers.length > 0) {
+    groups.push({
+      title: "MCP servers \u00b7 commands, re-created with your consent",
+      items: stdioServers.map((item) => {
+        const stdio = item.stdio;
+        const entry: MultiGroup<string>["items"][number] = {
+          value: `mcp/${item.name}`,
+          label: item.name,
+          preselected: false,
+        };
+        if (stdio !== undefined) {
+          const envSuffix = stdio.envNames.length > 0 ? ` (needs ${stdio.envNames.join(", ")})` : "";
+          entry.hint = `${[stdio.command, ...stdio.args].join(" ")}${envSuffix}`;
+        }
+        return entry;
+      }),
+    });
+  }
+  // Exclusions no longer occupy the picker: the review's
   // closing line accounts for them where the leaves-the-machine story lives.
   return groups;
 }
@@ -234,8 +257,9 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
     const skips = groups
       .filter((group) => group.locked !== true)
       .flatMap((group) => group.items.map((item) => item.value))
-      .filter((token) => !chosen.has(token) && !token.startsWith("plugin/"));
+      .filter((token) => !chosen.has(token) && !token.startsWith("plugin/") && !token.startsWith("mcp/"));
     const plugins = travel.filter((token) => token.startsWith("plugin/")).map((token) => token.slice("plugin/".length));
+    const selectedMcp = travel.filter((token) => token.startsWith("mcp/")).map((token) => token.slice("mcp/".length));
 
     let hooks: string[] = [];
     if (hookGroup !== null) {
@@ -251,6 +275,7 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
     const collectOptions: Parameters<typeof collectExport>[0] = {
       confirmedHooks: hooks,
       selectedPlugins: plugins,
+      selectedMcp,
       skips,
     };
     if (overrides.userDir !== undefined) collectOptions.userDir = overrides.userDir;
@@ -303,7 +328,7 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
       if (choice === "skip") {
         ui.outro(
           "Nothing was written.",
-          `To pack a different way, scripted: ${flagEcho({ skips, plugins, hooks, allowSecrets, dest })}`,
+          `To pack a different way, scripted: ${flagEcho({ skips, plugins, hooks, mcp: selectedMcp, allowSecrets, dest })}`,
         );
         return 0;
       }
@@ -319,7 +344,7 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
     const destPath = join(overrides.destDir ?? process.cwd(), dest);
     writeDestination(destPath, dest, plan);
 
-    const selections: Selections = { skips, plugins, hooks, allowSecrets, dest };
+    const selections: Selections = { skips, plugins, hooks, mcp: selectedMcp, allowSecrets, dest };
     ui.outro(
       `Packed ${plan.entries.length} files (${formatBytes(totalBytes)}) -> ${destLabel(dest)}`,
       `Next time, scripted: ${flagEcho(selections)}`,
@@ -547,7 +572,25 @@ export async function runGuidedApply(
     }
 
     const requestedMcp: string[] = [];
+    const stdioConsents: { name: string; command: string; envNames: string[] }[] = [];
     for (const server of bundle.manifest.mcpServers) {
+      if (server.transport === "stdio" && typeof server.command === "string") {
+        // The consent line is built from manifest fields, never from a
+        // planned argv, so no env value can exist yet to leak into it.
+        const envNames = server.envNames ?? [];
+        const envDisplay = envNames.map((envName) => `--env ${envName}=...`).join(" ");
+        const commandLine = [server.command, ...(server.args ?? [])].join(" ");
+        const consent = await ui.confirm(
+          `Register MCP server ${server.name}? (claude mcp add --transport stdio ${envDisplay}${envDisplay.length > 0 ? " " : ""}-- ${commandLine})`,
+          false,
+        );
+        if (consent === null) return 2;
+        if (consent) {
+          requestedMcp.push(server.name);
+          stdioConsents.push({ name: server.name, command: server.command, envNames });
+        }
+        continue;
+      }
       if (server.status !== "candidate" || server.url === undefined) continue;
       let registration: McpRegistration | undefined;
       try {
@@ -564,12 +607,28 @@ export async function runGuidedApply(
       if (consent) requestedMcp.push(server.name);
     }
 
+    // Secrets are typed fresh on this machine, after consent and before any
+    // write; they live only in this map on their way into the argv.
+    const secretValues = new Map<string, string>();
+    for (const consent of stdioConsents) {
+      for (const envName of consent.envNames) {
+        const value = await ui.secret(`${consent.name} needs ${envName}`);
+        if (value === null) return 2;
+        secretValues.set(`${consent.name}\u0000${envName}`, value);
+      }
+      if (!commandOnPath(consent.command)) {
+        ui.note([`note: ${consent.command} is not on this machine's PATH yet; the registration still lands.`]);
+      }
+    }
+
     // Assemble done; from here it is exactly the flag path. The split runs
     // AFTER the gates because gating rewrites settings.json in the bundle,
     // and every root is planned before the first root writes.
     gateSettingsHooks(bundle, confirmedHooks);
     gateSettingsPlugins(bundle, confirmedPlugins);
-    const registrations = planMcpRegistrations(bundle.manifest.mcpServers, requestedMcp);
+    const registrations = planMcpRegistrations(bundle.manifest.mcpServers, requestedMcp, (serverName, envName) =>
+      secretValues.get(`${serverName}\u0000${envName}`),
+    );
     const slices = splitBundleByRoot(bundle, roots);
     const planned = slices.map((slice) => ({ slice, plan: planApply(slice.bundle, slice.root) }));
     let creates = 0;
@@ -641,6 +700,7 @@ interface GuidedUi {
   groupMultiselect(message: string, groups: MultiGroup<string>[], coach?: string): Promise<string[] | null>;
   select(message: string, items: typeof DESTINATIONS): Promise<string | null>;
   confirm(message: string, initial?: boolean): Promise<boolean | null>;
+  secret(message: string): Promise<string | null>;
   review(lines: string[], dest: string): Promise<"pack" | "skip" | "dest" | null>;
   outro(...lines: string[]): void;
   close(): void;
@@ -688,6 +748,11 @@ function pickerUi(overrides: GuidedOverrides & { wordmark?: boolean }): GuidedUi
     },
     async confirm(message, initial = true) {
       const result = await flow.confirm(message, initial);
+      if (result.cancelled) open = false;
+      return result.cancelled ? null : result.value;
+    },
+    async secret(message) {
+      const result = await flow.secret(message);
       if (result.cancelled) open = false;
       return result.cancelled ? null : result.value;
     },
@@ -777,6 +842,14 @@ function plainUi(io: CommandIo, overrides: GuidedOverrides): GuidedUi {
       const result = await plain.confirm(message, initial);
       if (result.cancelled) io.err("Cancelled. Nothing was written.");
       return result.cancelled ? null : result.value;
+    },
+    async secret(message) {
+      const result = await plain.secret(message);
+      if (result.cancelled) {
+        io.err("Cancelled. Nothing was written.");
+        return null;
+      }
+      return result.value;
     },
     // Plain mode reads the same tree and answers one y/N; changing the
     // destination in plain mode is the scripted flags' job, which the echo

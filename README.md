@@ -47,7 +47,7 @@ The scanner reads an explicit allowlist of paths and nothing else. These are exc
 
 File contents are scanned at export too: a file whose content matches a token pattern (known key prefixes, private-key blocks, high-entropy strings) is refused by default and carried only after explicit consent — a y/N in the guided flow, `--allow-secret <path>` in flag mode. Findings name the file and line, never the matched value.
 
-MCP server entries are recorded as a name plus a portability class. Secret values are never copied; a server that needs one gets flagged so you can re-enter it on the target. Hooks are shell commands, so each one is confirmed individually before it is included, and confirmed again on the machine that applies it.
+MCP server entries are recorded as a name plus a portability class. Remote servers travel as name and sanitized URL. Command-based (stdio) servers can travel too, as structure only — the command, its args, and the NAMES of the env variables it needs — behind a repeatable `--mcp <name>` at export and again at apply; the values are typed fresh on the target (the guided apply asks with a masked prompt, the scripted path reads the target machine's own environment and fails closed naming the missing variable — deliberately no flag, so secrets never touch argv or shell history). Secret values are never copied anywhere. Hooks are shell commands, so each one is confirmed individually before it is included, and confirmed again on the machine that applies it.
 
 ## No telemetry
 

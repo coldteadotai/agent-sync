@@ -117,6 +117,7 @@ function scanConfigToml(path: string, scope: Scope, items: ScanItem[], diagnosti
         item.url = classification.url;
         item.transport = classification.transport ?? "http";
       }
+      if (classification.stdio !== undefined) item.stdio = classification.stdio;
       items.push(item);
     }
   }

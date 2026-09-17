@@ -141,6 +141,7 @@ function scanOpencodeConfig(path: string, scope: Scope, items: ScanItem[], diagn
         item.url = classification.url;
         item.transport = classification.transport ?? "http";
       }
+      if (classification.stdio !== undefined) item.stdio = classification.stdio;
       items.push(item);
     }
     break;

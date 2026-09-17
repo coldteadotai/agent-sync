@@ -6,7 +6,9 @@ import { undoCommand } from "./commands/undo.js";
 import { chooseEntry, runGuided } from "./commands/guided.js";
 
 export { classifyMcpServer, isSensitiveKey, sanitizeRemoteEndpoint, scanSecretReferences } from "./scan/classify.js";
-export { planMcpRegistrations } from "./apply/mcp.js";
+export { planMcpRegistrations, processEnvResolver, commandOnPath } from "./apply/mcp.js";
+export type { McpEnvResolver, McpRegistration } from "./apply/mcp.js";
+export type { StdioDefinition } from "./scan/classify.js";
 export { scanClaudeCode, PORTABLE_SETTINGS_KEYS } from "./scan/scanner.js";
 export { scanCodex, CODEX_PORTABLE_SETTINGS_KEYS } from "./scan/codex.js";
 export { scanOpencode, OPENCODE_PORTABLE_SETTINGS_KEYS, stripJsonc } from "./scan/opencode.js";

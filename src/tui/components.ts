@@ -30,6 +30,7 @@ export interface Flow {
   note(lines: string[]): void;
   outro(text: string): void;
   confirm(message: string, initial?: boolean): Promise<PromptResult<boolean>>;
+  secret(message: string): Promise<PromptResult<string>>;
   select<T>(message: string, items: MultiItem<T>[]): Promise<PromptResult<T>>;
   groupMultiselect<T>(message: string, groups: MultiGroup<T>[], options?: { required?: boolean; coach?: string }): Promise<PromptResult<T[]>>;
 }
@@ -208,7 +209,7 @@ function toggle<T>(state: MultiState<T>, id: number): void {
   else state.selected.add(id);
 }
 
-// The drawing the owner signed off: chip in the header, coach line until the
+// The design of record: chip in the header, coach line until the
 // first toggle, plain group headers with air between groups, full-row
 // highlight on the active item, hints demoted to one detail line, the locked
 // section a single counted line unless v expands it, and a three-entry footer
@@ -381,6 +382,32 @@ export function createFlow(screen: Screen, theme: Theme): Flow {
           summaryCommit(message, value ? "yes" : "no");
           return done(value);
         }
+      }
+    },
+
+    // Masked line entry for values that must never echo: asterisks on
+    // screen, the real characters only in memory, esc or ctrl+c cancels.
+    async secret(message) {
+      let value = "";
+      for (;;) {
+        screen.renderLive([
+          `${theme.paint("accent", g.stepActive)}  ${theme.paint("bright", message)}`,
+          `${bar}  ${"*".repeat(Math.min(value.length, 40))}${theme.paint("inverse", " ")}`,
+          `${theme.paint("accent", g.railEnd)}  ${theme.paint("dim", ["type the value", "enter confirm", "esc cancel"].join(` ${g.sep} `))}`,
+        ]);
+        const key = await screen.waitKey();
+        if (key.name === "cancel" || key.name === "escape") {
+          cancelCommit(message);
+          return cancelled();
+        }
+        if (key.name === "return" || key.name === "enter") {
+          if (value.length === 0) continue;
+          screen.clearLive();
+          summaryCommit(message, "********");
+          return done(value);
+        }
+        if (key.name === "backspace") value = value.slice(0, -1);
+        else if (key.char !== null) value += key.char;
       }
     },
 

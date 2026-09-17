@@ -47,7 +47,12 @@ export interface ManifestMcpServer {
   reason: string;
   envRefs?: string[];
   url?: string;
-  transport?: "http" | "sse";
+  transport?: "http" | "sse" | "stdio";
+  // Present only when the exporter consented with --mcp: the re-creatable
+  // command shape. Env NAMES only; values never enter a manifest.
+  command?: string;
+  args?: string[];
+  envNames?: string[];
 }
 
 export interface ManifestHook {
@@ -106,6 +111,7 @@ export interface CollectOptions {
   opencodeConfigDir?: string;
   confirmedHooks?: string[];
   selectedPlugins?: string[];
+  selectedMcp?: string[];
   skips?: string[];
   allowSecrets?: string[];
 }
@@ -123,6 +129,7 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
   const userDir = options.userDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
   const confirmedHooks = options.confirmedHooks ?? [];
   const selectedPlugins = options.selectedPlugins ?? [];
+  const selectedMcp = options.selectedMcp ?? [];
   const skips = new Set(options.skips ?? []);
   const allowSecrets = new Set(options.allowSecrets ?? []);
 
@@ -231,6 +238,23 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
   }
   const includedPlugins = new Set(selectedPlugins.filter((name) => pluginNames.has(name)));
 
+  // Stdio definitions are code specs, so they travel only when named with
+  // --mcp — symmetric to hooks. Remote entries keep traveling as data.
+  const stdioCapable = new Set(
+    userItems
+      .filter((item) => item.kind === "mcp_server" && item.stdio !== undefined)
+      .map((item) => item.name),
+  );
+  for (const requested of selectedMcp) {
+    if (!stdioCapable.has(requested)) {
+      diagnostics.push({
+        severity: "error",
+        message: `--mcp ${requested} does not match any portable command-based server.`,
+      });
+    }
+  }
+  const includedMcp = new Set(selectedMcp.filter((name) => stdioCapable.has(name)));
+
   const settingsContent = buildPortableSettings(join(userDir, "settings.json"), {
     includePreferences: !skips.has("settings"),
     includedHooks: included,
@@ -301,7 +325,7 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
       .sort((a, b) => (a.path < b.path ? -1 : 1)),
     mcpServers: userItems
       .filter((item) => item.kind === "mcp_server")
-      .map((item) => toManifestServer(item)),
+      .map((item) => toManifestServer(item, includedMcp)),
     hooks: hookItems.map((item) => ({ name: item.name, included: included.has(item.name) })),
   };
   if (hasCodex || hasOpencode) manifest.agents = agents;
@@ -326,12 +350,18 @@ export function collectExport(options: CollectOptions = {}): ExportPlan {
   return { manifest, entries, skipped, secretFindings, diagnostics };
 }
 
-function toManifestServer(item: ScanItem): ManifestMcpServer {
+function toManifestServer(item: ScanItem, includedMcp: Set<string>): ManifestMcpServer {
   const server: ManifestMcpServer = { name: item.name, status: item.status, reason: item.reason };
   if (item.envRefs !== undefined && item.envRefs.length > 0) server.envRefs = item.envRefs;
   if (item.url !== undefined) {
     server.url = item.url;
     server.transport = item.transport ?? "http";
+  }
+  if (item.stdio !== undefined && includedMcp.has(item.name)) {
+    server.transport = "stdio";
+    server.command = item.stdio.command;
+    server.args = item.stdio.args;
+    server.envNames = item.stdio.envNames;
   }
   return server;
 }

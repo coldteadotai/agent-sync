@@ -1,11 +1,18 @@
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
+export interface StdioDefinition {
+  command: string;
+  args: string[];
+  envNames: string[];
+}
+
 export interface McpClassification {
   status: "candidate" | "needs_secret" | "blocked" | "unsupported";
   reason: string;
   envRefs: string[];
   url?: string;
   transport?: "http" | "sse";
+  stdio?: StdioDefinition;
 }
 
 export interface EndpointCheck {
@@ -207,11 +214,29 @@ export function classifyMcpServer(value: JsonValue): McpClassification {
   const executable = hasExecutableSurface(value, strings);
 
   if (executable || hasLocalPath || hasLocalUrl) {
+    // A command-based server whose strings are free of machine-local paths
+    // and local URLs is portable STRUCTURE: command, args, and env NAMES.
+    // Env values are dropped right here at extraction, so no downstream
+    // layer can ever see one. Anything pinned to this machine stays blocked.
+    if (executable && !hasLocalPath && !hasLocalUrl) {
+      const stdio = extractStdioDefinition(value, secrets.envRefs);
+      if (stdio !== null) {
+        const needsSecrets = secrets.hasSecretReference || stdio.envNames.length > 0;
+        return {
+          status: needsSecrets ? "needs_secret" : "candidate",
+          reason: needsSecrets
+            ? "Command-based server; the command travels with consent, and env values are entered fresh on the target."
+            : "Command-based server; the command travels with consent.",
+          envRefs: secrets.envRefs,
+          stdio,
+        };
+      }
+    }
     const reason = hasLocalUrl
       ? "Localhost MCP endpoints cannot work from another machine."
       : hasLocalPath
         ? "References a machine-local path that will not exist on the target."
-        : "Stdio and command-based MCP servers run local programs and are never applied.";
+        : "Stdio and command-based MCP servers run local programs; this entry has no re-creatable command shape.";
     return { status: "blocked", reason, envRefs: secrets.envRefs };
   }
 
@@ -252,6 +277,36 @@ export function classifyMcpServer(value: JsonValue): McpClassification {
     reason: "Not enough metadata to classify this server.",
     envRefs: secrets.envRefs,
   };
+}
+
+// Pulls the re-creatable shape out of a stdio entry: command, string args,
+// and the env NAMES the server expects (object keys plus $VAR references).
+// Values under env are intentionally never read past their keys.
+function extractStdioDefinition(value: JsonValue, envRefs: string[]): StdioDefinition | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as { [key: string]: JsonValue };
+  if (typeof record.command !== "string" || record.command.trim().length === 0) return null;
+  const rawArgs = record.args;
+  const args: string[] = [];
+  if (rawArgs !== undefined) {
+    if (!Array.isArray(rawArgs)) return null;
+    for (const arg of rawArgs) {
+      if (typeof arg !== "string") return null;
+      // A bare script filename ("serve.py") is a machine-local file in
+      // disguise: it resolves against some working directory that only
+      // exists here. Package specifiers and flags pass; loose scripts do not.
+      if (/\.(py|sh|js|ts|mjs|cjs)$/i.test(arg) && !arg.startsWith("@") && !arg.includes("/")) return null;
+      args.push(arg);
+    }
+  }
+  const envNames = new Set<string>(envRefs);
+  const env = record.env;
+  if (env !== null && env !== undefined && typeof env === "object" && !Array.isArray(env)) {
+    for (const name of Object.keys(env)) {
+      if (ENV_VAR_NAME.test(name)) envNames.add(name);
+    }
+  }
+  return { command: record.command.trim(), args, envNames: [...envNames].sort() };
 }
 
 function hasExecutableSurface(value: JsonValue, strings: string[]): boolean {

@@ -11,7 +11,7 @@ import {
   planApply,
   splitBundleByRoot,
 } from "../apply/apply.js";
-import { planMcpRegistrations, runMcpRegistration } from "../apply/mcp.js";
+import { commandOnPath, planMcpRegistrations, runMcpRegistration } from "../apply/mcp.js";
 import { stringList } from "./export.js";
 import { chooseEntry, runGuidedApply } from "./guided.js";
 
@@ -185,8 +185,18 @@ export const applyCommand: CommandDef = {
       }
     }
 
+    for (const registration of registrations) {
+      const server = bundle.manifest.mcpServers.find((candidate) => candidate.name === registration.name);
+      if (server?.transport === "stdio" && typeof server.command === "string" && !commandOnPath(server.command)) {
+        io.out(`Note: ${server.command} is not on this machine's PATH yet; the ${server.name} registration still lands.`);
+      }
+    }
+
     const unregistered = bundle.manifest.mcpServers.filter(
-      (server) => server.status === "candidate" && server.url !== undefined && !requestedMcp.includes(server.name),
+      (server) =>
+        !requestedMcp.includes(server.name) &&
+        ((server.status === "candidate" && server.url !== undefined) ||
+          (server.transport === "stdio" && server.command !== undefined)),
     );
     if (unregistered.length > 0) {
       io.out(
