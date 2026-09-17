@@ -1,10 +1,51 @@
-# agent-sync
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/wordmark-dark.svg">
+    <img src="docs/assets/wordmark-light.svg" alt="AGENT SYNC" width="620">
+  </picture>
+</p>
 
-Carry your local AI agent setup to any machine.
+<p align="center"><b>Carry your local AI agent setup to any machine.</b></p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/@coldtea/agent-sync"><img src="https://img.shields.io/npm/v/%40coldtea%2Fagent-sync?color=5c9a8f&label=npm" alt="npm version"></a>
+  <a href="https://github.com/coldteadotai/agent-sync/actions/workflows/ci.yml"><img src="https://github.com/coldteadotai/agent-sync/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/runtime%20dependencies-0-5c9a8f" alt="zero runtime dependencies">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-5c9a8f" alt="MIT license"></a>
+</p>
+
+---
 
 Your skills, subagents, slash commands and memory files live in `~/.claude` on one computer. When you work on a server, a VM or a cloud development environment, none of it is there, and the usual fixes are bad: committing personal config into project repos, opaque disk snapshots, or rsync scripts pointed at a directory that also holds your OAuth tokens.
 
-agent-sync packs the portable part of your setup into a bundle you can read before it goes anywhere, and applies it on the target machine with checks at every step.
+agent-sync packs the portable part of your setup into a bundle you can read before it goes anywhere, and applies it on the target machine with checks at every step. Secrets never travel — not in files, not in MCP entries, not in env values.
+
+```
+▄▀▀▄ ▄▀▀▀ █▀▀▀ █▄ █ ▀█▀▀    ▄▀▀▀ █  █ █▄ █ ▄▀▀▀
+█▀▀█ █ ▀█ █▀▀  █▀██  █       ▀▀▄  █▀  █▀██ █
+▀  ▀  ▀▀▀ ▀▀▀▀ ▀  ▀  ▀      ▀▀▀   ▀   ▀  ▀  ▀▀▀
+carry your agent setup anywhere · v0.3.0
+
+┌  Found on this machine
+│
+│  Claude Code   2 skills · settings · 10 hooks · 3 plugins
+│  Codex         memory · settings
+│
+◆  What goes in the bundle?   5 of 8 picked
+│  space picks · enter continues with what is checked
+│
+│  Skills
+│  ● boxd-cli
+│  ● boxd-setup-hermes
+│  Plugins
+│  ○ ponytail
+│  Codex
+│  ● config.toml
+│  ● AGENTS.md
+│
+│  ✕ 5 items never leave this machine · v to view
+└  space pick · enter continue · ? keys
+```
 
 ## Install
 
