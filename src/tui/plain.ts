@@ -75,6 +75,17 @@ export class Plain {
     }
   }
 
+  // Plain mode cannot mask input (it reads cooked lines), so it says so
+  // before asking; the value still never appears in any later output.
+  async secret(message: string): Promise<PromptResult<string>> {
+    for (;;) {
+      const answer = await this.ask(`${message} (input is visible in this mode)`);
+      if (answer === null) return cancelled();
+      if (answer.trim().length > 0) return done(answer.trim());
+      this.say("A value is required, or ctrl+c to cancel.");
+    }
+  }
+
   async select<T>(message: string, items: MultiItem<T>[]): Promise<PromptResult<T>> {
     for (;;) {
       const listing = items

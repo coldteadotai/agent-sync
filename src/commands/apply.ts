@@ -11,7 +11,7 @@ import {
   planApply,
   splitBundleByRoot,
 } from "../apply/apply.js";
-import { planMcpRegistrations, runMcpRegistration } from "../apply/mcp.js";
+import { commandOnPath, displayString, maskRegistrationDisplay, planMcpRegistrations, processEnvResolver, runMcpRegistration } from "../apply/mcp.js";
 import { stringList } from "./export.js";
 import { chooseEntry, runGuidedApply } from "./guided.js";
 
@@ -108,7 +108,13 @@ export const applyCommand: CommandDef = {
     }
     // Registrations are validated before any file write so a bad --mcp refuses
     // the whole apply, not half of it.
-    const registrations = planMcpRegistrations(bundle.manifest.mcpServers, requestedMcp);
+    // A dry run must never resolve real secrets: it plans with a "..."
+    // placeholder resolver, so the value cannot exist to be echoed.
+    const registrations = planMcpRegistrations(
+      bundle.manifest.mcpServers,
+      requestedMcp,
+      dryRun ? () => "..." : processEnvResolver(),
+    );
 
     // A bundle may span several agents; each agent root gets its own plan,
     // marker and backups, and every root is planned (write-checked) before
@@ -173,7 +179,7 @@ export const applyCommand: CommandDef = {
     let failedRegistrations = 0;
     for (const registration of registrations) {
       if (dryRun) {
-        io.out(`Would register MCP server ${registration.name}: claude ${registration.args.join(" ")}`);
+        io.out(maskRegistrationDisplay(`Would register MCP server ${registration.name}: claude ${registration.args.join(" ")}`, registration));
         continue;
       }
       try {
@@ -185,12 +191,22 @@ export const applyCommand: CommandDef = {
       }
     }
 
+    for (const registration of registrations) {
+      const server = bundle.manifest.mcpServers.find((candidate) => candidate.name === registration.name);
+      if (server?.transport === "stdio" && typeof server.command === "string" && !commandOnPath(server.command)) {
+        io.out(`Note: ${displayString(server.command)} is not on this machine's PATH yet; the ${displayString(server.name)} registration still lands.`);
+      }
+    }
+
     const unregistered = bundle.manifest.mcpServers.filter(
-      (server) => server.status === "candidate" && server.url !== undefined && !requestedMcp.includes(server.name),
+      (server) =>
+        !requestedMcp.includes(server.name) &&
+        ((server.status === "candidate" && server.url !== undefined) ||
+          (server.transport === "stdio" && server.command !== undefined)),
     );
     if (unregistered.length > 0) {
       io.out(
-        `Bundle records ${unregistered.length} portable MCP server(s) not registered; pass --mcp <name> to register: ${unregistered.map((server) => server.name).join(", ")}`,
+        `Bundle records ${unregistered.length} portable MCP server(s) not registered; pass --mcp <name> to register: ${unregistered.map((server) => displayString(server.name, 60)).join(", ")}`,
       );
     }
     if (failedRegistrations > 0) {

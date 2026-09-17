@@ -22,6 +22,7 @@ export interface ScanItem {
   envRefs?: string[];
   url?: string;
   transport?: "http" | "sse";
+  stdio?: { command: string; args: string[]; envNames: string[] };
 }
 
 export interface ExcludedPath {

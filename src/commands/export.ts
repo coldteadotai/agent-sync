@@ -16,6 +16,7 @@ const HELP = [
   "  --plugin <name>  Include one plugin reference (repeatable), e.g. --plugin ponytail@ponytail",
   "  --skip <item>    Leave one scanned item behind (repeatable), e.g. --skip skill/boxd-cli or --skip settings",
   "  --allow-secret <path>  Carry a file despite a secret-content finding (repeatable, refuse-by-default)",
+  "  --mcp <name>     Carry one command-based MCP server's structure (repeatable; env values never travel)",
   "  --dry-run        Print exactly what would be packed and write nothing",
   "  --json           Print the manifest as JSON instead of the summary",
   "  --help           Show help",
@@ -30,6 +31,7 @@ export const exportCommand: CommandDef = {
     plugin: { type: "string", description: "Include one plugin reference (repeatable)", multiple: true },
     skip: { type: "string", description: "Leave one scanned item behind (repeatable)", multiple: true },
     "allow-secret": { type: "string", description: "Carry a file despite a secret-content finding (repeatable)", multiple: true },
+    mcp: { type: "string", description: "Carry one command-based MCP server's structure (repeatable)", multiple: true },
     "dry-run": { type: "boolean", description: "Print the packing list and write nothing" },
     json: { type: "boolean", description: "Print the manifest as JSON" },
   },
@@ -49,8 +51,9 @@ export const exportCommand: CommandDef = {
     const selectedPlugins = stringList(values.plugin);
     const skips = stringList(values.skip);
     const allowSecrets = stringList(values["allow-secret"]);
+    const selectedMcp = stringList(values.mcp);
 
-    const plan = collectExport({ confirmedHooks, selectedPlugins, skips, allowSecrets });
+    const plan = collectExport({ confirmedHooks, selectedPlugins, skips, allowSecrets, selectedMcp });
 
     if (plan.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
       for (const diagnostic of plan.diagnostics) io.err(`${diagnostic.severity}: ${diagnostic.message}`);

@@ -82,8 +82,9 @@ test("codex mcp servers classify with the shared classifier", () => {
   assert.equal(linear.status, "candidate");
   assert.equal(linear.url, "https://mcp.linear.app/mcp");
   const local = item("local");
-  assert.equal(local.status, "blocked");
+  assert.equal(local.status, "needs_secret");
   assert.deepEqual(local.envRefs, ["LOCAL_TOKEN"]);
+  assert.deepEqual(local.stdio, { command: "npx", args: ["-y", "some-mcp"], envNames: ["LOCAL_TOKEN"] });
 });
 
 test("project scope picks up config and root AGENTS.md", () => {

@@ -1,4 +1,12 @@
+import { scanContentForSecrets } from "../export/secrets.js";
+
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+export interface StdioDefinition {
+  command: string;
+  args: string[];
+  envNames: string[];
+}
 
 export interface McpClassification {
   status: "candidate" | "needs_secret" | "blocked" | "unsupported";
@@ -6,6 +14,7 @@ export interface McpClassification {
   envRefs: string[];
   url?: string;
   transport?: "http" | "sse";
+  stdio?: StdioDefinition;
 }
 
 export interface EndpointCheck {
@@ -51,7 +60,9 @@ function isPrivateHost(hostname: string): boolean {
 
 function isPrivateIpv4(host: string): boolean {
   const octets = host.split(".").map(Number);
-  if (octets.length !== 4 || !octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)) {
+  // Shorthand numeric forms ("127.1", "10.5") resolve as IPs too, so any
+  // all-numeric dotted host gets the range checks, not only 4-octet ones.
+  if (octets.length < 1 || octets.length > 4 || !octets.every((octet) => Number.isInteger(octet) && octet >= 0)) {
     return false;
   }
   const [a = 0, b = 0] = octets;
@@ -207,11 +218,29 @@ export function classifyMcpServer(value: JsonValue): McpClassification {
   const executable = hasExecutableSurface(value, strings);
 
   if (executable || hasLocalPath || hasLocalUrl) {
+    // A command-based server whose strings are free of machine-local paths
+    // and local URLs is portable STRUCTURE: command, args, and env NAMES.
+    // Env values are dropped right here at extraction, so no downstream
+    // layer can ever see one. Anything pinned to this machine stays blocked.
+    if (executable && !hasLocalPath && !hasLocalUrl) {
+      const stdio = extractStdioDefinition(value, secrets.envRefs);
+      if (stdio !== null) {
+        const needsSecrets = secrets.hasSecretReference || stdio.envNames.length > 0;
+        return {
+          status: needsSecrets ? "needs_secret" : "candidate",
+          reason: needsSecrets
+            ? "Command-based server; the command travels with consent, and env values are entered fresh on the target."
+            : "Command-based server; the command travels with consent.",
+          envRefs: secrets.envRefs,
+          stdio,
+        };
+      }
+    }
     const reason = hasLocalUrl
       ? "Localhost MCP endpoints cannot work from another machine."
       : hasLocalPath
         ? "References a machine-local path that will not exist on the target."
-        : "Stdio and command-based MCP servers run local programs and are never applied.";
+        : "Stdio and command-based MCP servers run local programs; this entry has no re-creatable command shape.";
     return { status: "blocked", reason, envRefs: secrets.envRefs };
   }
 
@@ -252,6 +281,60 @@ export function classifyMcpServer(value: JsonValue): McpClassification {
     reason: "Not enough metadata to classify this server.",
     envRefs: secrets.envRefs,
   };
+}
+
+// Pulls the re-creatable shape out of a stdio entry: command, string args,
+// and the env NAMES the server expects (object keys plus $VAR references).
+// Values under env are intentionally never read past their keys.
+function extractStdioDefinition(value: JsonValue, envRefs: string[]): StdioDefinition | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as { [key: string]: JsonValue };
+  if (typeof record.command !== "string" || record.command.trim().length === 0) return null;
+  const command = record.command.trim();
+  // A script filename anywhere ("serve.py", "scripts/serve.py") is a
+  // machine-local file in disguise: it resolves against a working directory
+  // that only exists here. Package specifiers (@scope/name) pass; loose
+  // scripts do not — in the command or in any arg.
+  if (looksLikeLooseScript(command)) return null;
+  const rawArgs = record.args;
+  const args: string[] = [];
+  if (rawArgs !== undefined) {
+    if (!Array.isArray(rawArgs)) return null;
+    for (const arg of rawArgs) {
+      if (typeof arg !== "string") return null;
+      if (looksLikeLooseScript(arg)) return null;
+      // A URL pinned to loopback or a private range cannot work elsewhere.
+      const url = arg.match(/^https?:\/\//i) ? tryParseHost(arg) : null;
+      if (url !== null && isPrivateHost(url)) return null;
+      // An argument that looks like a credential IS a value; values never
+      // travel. The fix on the source machine is moving it into env.
+      if (scanContentForSecrets(Buffer.from(arg, "utf8")).length > 0) return null;
+      args.push(arg);
+    }
+  }
+  if (scanContentForSecrets(Buffer.from(command, "utf8")).length > 0) return null;
+  const envNames = new Set<string>(envRefs);
+  const env = record.env;
+  if (env !== null && env !== undefined && typeof env === "object" && !Array.isArray(env)) {
+    for (const name of Object.keys(env)) {
+      if (ENV_VAR_NAME.test(name)) envNames.add(name);
+    }
+  }
+  return { command, args, envNames: [...envNames].sort() };
+}
+
+const LOOSE_SCRIPT = /\.(py|sh|bash|zsh|js|ts|mjs|cjs|rb|pl|php|lua)$/i;
+
+function looksLikeLooseScript(text: string): boolean {
+  return LOOSE_SCRIPT.test(text) && !text.startsWith("@");
+}
+
+function tryParseHost(raw: string): string | null {
+  try {
+    return new URL(raw).hostname;
+  } catch {
+    return null;
+  }
 }
 
 function hasExecutableSurface(value: JsonValue, strings: string[]): boolean {
