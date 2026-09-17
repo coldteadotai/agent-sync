@@ -1,3 +1,5 @@
+import { scanContentForSecrets } from "../export/secrets.js";
+
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 export interface StdioDefinition {
@@ -58,7 +60,9 @@ function isPrivateHost(hostname: string): boolean {
 
 function isPrivateIpv4(host: string): boolean {
   const octets = host.split(".").map(Number);
-  if (octets.length !== 4 || !octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)) {
+  // Shorthand numeric forms ("127.1", "10.5") resolve as IPs too, so any
+  // all-numeric dotted host gets the range checks, not only 4-octet ones.
+  if (octets.length < 1 || octets.length > 4 || !octets.every((octet) => Number.isInteger(octet) && octet >= 0)) {
     return false;
   }
   const [a = 0, b = 0] = octets;
@@ -286,19 +290,29 @@ function extractStdioDefinition(value: JsonValue, envRefs: string[]): StdioDefin
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as { [key: string]: JsonValue };
   if (typeof record.command !== "string" || record.command.trim().length === 0) return null;
+  const command = record.command.trim();
+  // A script filename anywhere ("serve.py", "scripts/serve.py") is a
+  // machine-local file in disguise: it resolves against a working directory
+  // that only exists here. Package specifiers (@scope/name) pass; loose
+  // scripts do not — in the command or in any arg.
+  if (looksLikeLooseScript(command)) return null;
   const rawArgs = record.args;
   const args: string[] = [];
   if (rawArgs !== undefined) {
     if (!Array.isArray(rawArgs)) return null;
     for (const arg of rawArgs) {
       if (typeof arg !== "string") return null;
-      // A bare script filename ("serve.py") is a machine-local file in
-      // disguise: it resolves against some working directory that only
-      // exists here. Package specifiers and flags pass; loose scripts do not.
-      if (/\.(py|sh|js|ts|mjs|cjs)$/i.test(arg) && !arg.startsWith("@") && !arg.includes("/")) return null;
+      if (looksLikeLooseScript(arg)) return null;
+      // A URL pinned to loopback or a private range cannot work elsewhere.
+      const url = arg.match(/^https?:\/\//i) ? tryParseHost(arg) : null;
+      if (url !== null && isPrivateHost(url)) return null;
+      // An argument that looks like a credential IS a value; values never
+      // travel. The fix on the source machine is moving it into env.
+      if (scanContentForSecrets(Buffer.from(arg, "utf8")).length > 0) return null;
       args.push(arg);
     }
   }
+  if (scanContentForSecrets(Buffer.from(command, "utf8")).length > 0) return null;
   const envNames = new Set<string>(envRefs);
   const env = record.env;
   if (env !== null && env !== undefined && typeof env === "object" && !Array.isArray(env)) {
@@ -306,7 +320,21 @@ function extractStdioDefinition(value: JsonValue, envRefs: string[]): StdioDefin
       if (ENV_VAR_NAME.test(name)) envNames.add(name);
     }
   }
-  return { command: record.command.trim(), args, envNames: [...envNames].sort() };
+  return { command, args, envNames: [...envNames].sort() };
+}
+
+const LOOSE_SCRIPT = /\.(py|sh|bash|zsh|js|ts|mjs|cjs|rb|pl|php|lua)$/i;
+
+function looksLikeLooseScript(text: string): boolean {
+  return LOOSE_SCRIPT.test(text) && !text.startsWith("@");
+}
+
+function tryParseHost(raw: string): string | null {
+  try {
+    return new URL(raw).hostname;
+  } catch {
+    return null;
+  }
 }
 
 function hasExecutableSurface(value: JsonValue, strings: string[]): boolean {

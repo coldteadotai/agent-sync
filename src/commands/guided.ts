@@ -15,7 +15,7 @@ import {
   type AgentRoots,
 } from "../apply/apply.js";
 import type { LoadedBundle } from "../apply/bundle.js";
-import { commandOnPath, planMcpRegistrations, runMcpRegistration, type McpRegistration } from "../apply/mcp.js";
+import { assertPortableStdioServer, commandOnPath, planMcpRegistrations, runMcpRegistration, type McpRegistration } from "../apply/mcp.js";
 import type { JsonValue } from "../scan/classify.js";
 import { commandSummary, scanClaudeCode } from "../scan/scanner.js";
 import { scanCodex } from "../scan/codex.js";
@@ -356,6 +356,17 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
   }
 }
 
+// Full-content wrapping for consent blocks: every character lands on some
+// line; nothing hides past an ellipsis.
+export function wrapDisplay(text: string, width: number): string[] {
+  if (text.length <= width) return [text];
+  const lines: string[] = [];
+  for (let index = 0; index < text.length; index += width) {
+    lines.push(index === 0 ? text.slice(0, width) : `    ${text.slice(index, index + width)}`);
+  }
+  return lines;
+}
+
 function destLabel(dest: string): string {
   return dest === "agent-sync-bundle" ? "agent-sync-bundle/" : dest;
 }
@@ -575,19 +586,26 @@ export async function runGuidedApply(
     const stdioConsents: { name: string; command: string; envNames: string[] }[] = [];
     for (const server of bundle.manifest.mcpServers) {
       if (server.transport === "stdio" && typeof server.command === "string") {
-        // The consent line is built from manifest fields, never from a
-        // planned argv, so no env value can exist yet to leak into it.
-        const envNames = server.envNames ?? [];
-        const envDisplay = envNames.map((envName) => `--env ${envName}=...`).join(" ");
-        const commandLine = [server.command, ...(server.args ?? [])].join(" ");
-        const consent = await ui.confirm(
-          `Register MCP server ${server.name}? (claude mcp add --transport stdio ${envDisplay}${envDisplay.length > 0 ? " " : ""}-- ${commandLine})`,
-          false,
-        );
+        // Validation precedes display: a string that has not passed the
+        // portability-and-hygiene gate must never reach a frame, so a
+        // hostile manifest cannot forge or steer the consent screen. The
+        // block is wrapped across full lines with no elision — what you
+        // read is the complete command, because this display IS the
+        // security boundary.
+        const validated = assertPortableStdioServer(server.name, server);
+        const commandLine = [validated.command, ...validated.args].join(" ");
+        ui.note([
+          `mcp server ${server.name} wants to register on this machine:`,
+          ...wrapDisplay(`  command: ${commandLine}`, 76),
+          validated.envNames.length > 0
+            ? `  env (values asked next, never carried): ${validated.envNames.join(", ")}`
+            : "  env: none",
+        ]);
+        const consent = await ui.confirm(`Register MCP server ${server.name}?`, false);
         if (consent === null) return 2;
         if (consent) {
           requestedMcp.push(server.name);
-          stdioConsents.push({ name: server.name, command: server.command, envNames });
+          stdioConsents.push({ name: server.name, command: validated.command, envNames: validated.envNames });
         }
         continue;
       }

@@ -6,7 +6,7 @@ import { undoCommand } from "./commands/undo.js";
 import { chooseEntry, runGuided } from "./commands/guided.js";
 
 export { classifyMcpServer, isSensitiveKey, sanitizeRemoteEndpoint, scanSecretReferences } from "./scan/classify.js";
-export { planMcpRegistrations, processEnvResolver, commandOnPath } from "./apply/mcp.js";
+export { planMcpRegistrations, processEnvResolver, commandOnPath, assertPortableStdioServer, maskRegistrationDisplay, displayString } from "./apply/mcp.js";
 export type { McpEnvResolver, McpRegistration } from "./apply/mcp.js";
 export type { StdioDefinition } from "./scan/classify.js";
 export { scanClaudeCode, PORTABLE_SETTINGS_KEYS } from "./scan/scanner.js";
@@ -21,7 +21,7 @@ export { Plain, plainModeRequested } from "./tui/plain.js";
 export type { ScanReport, ScanItem } from "./scan/types.js";
 export { collectExport, skipToken, MANIFEST_SCHEMA_VERSION } from "./export/collect.js";
 export type { Manifest, ManifestPlugin, ExportPlan } from "./export/collect.js";
-export { chooseEntry, runGuided, runGuidedApply, flagEcho, applyFlagEcho, buildTravelGroups, buildHookGroup, buildReviewLines, fitReviewLines } from "./commands/guided.js";
+export { chooseEntry, runGuided, runGuidedApply, flagEcho, applyFlagEcho, buildTravelGroups, buildHookGroup, buildReviewLines, fitReviewLines, wrapDisplay } from "./commands/guided.js";
 export { wordmarkLines, wordmarkWidth } from "./tui/wordmark.js";
 export { scanContentForSecrets } from "./export/secrets.js";
 export { createTar } from "./export/tar.js";
