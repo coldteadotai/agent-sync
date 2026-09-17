@@ -40,7 +40,7 @@ export function planMcpRegistrations(
       throw new Error(`--mcp ${name} does not match any server in this bundle's manifest.`);
     }
     if (!SERVER_NAME.test(name)) {
-      throw new Error(`--mcp ${name}: server name is not safe to pass along. Nothing was registered.`);
+      throw new Error(`--mcp ${displayString(name, 60)}: server name is not safe to pass along. Nothing was registered.`);
     }
     if (server.transport === "stdio" || server.command !== undefined) {
       registrations.push(planStdioRegistration(name, server, resolveEnv));
@@ -79,7 +79,9 @@ export function assertPortableStdioServer(
   server: ManifestMcpServer,
 ): { command: string; args: string[]; envNames: string[] } {
   if (!SERVER_NAME.test(name)) {
-    throw new Error(`--mcp ${name}: server name is not safe to pass along. Nothing was registered.`);
+    // The one message that may carry an unvalidated name sanitizes it first;
+    // main.ts prints error messages verbatim to stderr.
+    throw new Error(`--mcp ${displayString(name, 60)}: server name is not safe to pass along. Nothing was registered.`);
   }
   if (typeof server.command !== "string" || !cleanString(server.command)) {
     throw new Error(`--mcp ${name}: the bundle's command is not a clean string. Nothing was registered.`);
@@ -134,12 +136,20 @@ function planStdioRegistration(
 // list, the PATH note): strip anything that could steer a terminal and cap
 // the length, so a hostile name or command cannot forge output.
 export function displayString(text: string, cap = 120): string {
-  const stripped = text.replace(/[\u0000-\u001f\u007f]/g, "\ufffd");
+  const stripped = text.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g, "\ufffd");
   return stripped.length > cap ? `${stripped.slice(0, cap)}...` : stripped;
 }
 
 function cleanString(text: string): boolean {
-  return text.length > 0 && text.length <= MAX_STRING_LENGTH && !/[\u0000-\u001f\u007f]/.test(text);
+  // C0+DEL, the C1 range (U+009B is a one-codepoint CSI on xterm-class
+  // terminals), zero-widths, bidi and directional-isolate controls
+  // (trojan-source reordering), line/paragraph separators, and the BOM:
+  // commands and args have no legitimate use for any of them.
+  return (
+    text.length > 0 &&
+    text.length <= MAX_STRING_LENGTH &&
+    !/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/.test(text)
+  );
 }
 
 // A missing binary is a warning, not a refusal: the registration still

@@ -596,7 +596,10 @@ export async function runGuidedApply(
         const commandLine = [validated.command, ...validated.args].join(" ");
         ui.note([
           `mcp server ${server.name} wants to register on this machine:`,
-          ...wrapDisplay(`  command: ${commandLine}`, 76),
+          // Width follows the live terminal: the note prefix costs 3 cells,
+          // fit() truncates at columns-1, and continuation lines indent 4, so
+          // columns-8 keeps every wrapped character on screen even at 80.
+          ...wrapDisplay(`  command: ${commandLine}`, Math.max(20, ui.width() - 8)),
           validated.envNames.length > 0
             ? `  env (values asked next, never carried): ${validated.envNames.join(", ")}`
             : "  env: none",
@@ -719,6 +722,7 @@ interface GuidedUi {
   select(message: string, items: typeof DESTINATIONS): Promise<string | null>;
   confirm(message: string, initial?: boolean): Promise<boolean | null>;
   secret(message: string): Promise<string | null>;
+  width(): number;
   review(lines: string[], dest: string): Promise<"pack" | "skip" | "dest" | null>;
   outro(...lines: string[]): void;
   close(): void;
@@ -773,6 +777,9 @@ function pickerUi(overrides: GuidedOverrides & { wordmark?: boolean }): GuidedUi
       const result = await flow.secret(message);
       if (result.cancelled) open = false;
       return result.cancelled ? null : result.value;
+    },
+    width() {
+      return screen.columns;
     },
     // The review screen: the bundle tree, then "Pack it?" with the
     // destination as a named default. y packs, n leaves, d changes the
@@ -868,6 +875,10 @@ function plainUi(io: CommandIo, overrides: GuidedOverrides): GuidedUi {
         return null;
       }
       return result.value;
+    },
+    width() {
+      // Plain mode never truncates, so wrapping is cosmetic there.
+      return 4096;
     },
     // Plain mode reads the same tree and answers one y/N; changing the
     // destination in plain mode is the scripted flags' job, which the echo
