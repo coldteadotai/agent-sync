@@ -1,6 +1,6 @@
 {
   "name": "@coldtea/agent-sync",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Carry your AI agent setup to any machine. No daemon, no server, no secrets synced.",
   "license": "MIT",
   "repository": {
