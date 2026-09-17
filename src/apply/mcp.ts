@@ -136,19 +136,21 @@ function planStdioRegistration(
 // list, the PATH note): strip anything that could steer a terminal and cap
 // the length, so a hostile name or command cannot forge output.
 export function displayString(text: string, cap = 120): string {
-  const stripped = text.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g, "\ufffd");
+  const stripped = text.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, "\ufffd");
   return stripped.length > cap ? `${stripped.slice(0, cap)}...` : stripped;
 }
 
 function cleanString(text: string): boolean {
-  // C0+DEL, the C1 range (U+009B is a one-codepoint CSI on xterm-class
-  // terminals), zero-widths, bidi and directional-isolate controls
-  // (trojan-source reordering), line/paragraph separators, and the BOM:
+  // The whole class, not a list: Cc is every control (C0, DEL, C1 — U+009B
+  // is a one-codepoint CSI on xterm-class terminals), Cf is every invisible
+  // format character (zero-widths, bidi and isolate controls, BOM, ALM, soft
+  // hyphen, word joiner), plus the Zl/Zp separators explicitly. Invisibles
+  // let a displayed command read identically to a different argv, and
   // commands and args have no legitimate use for any of them.
   return (
     text.length > 0 &&
     text.length <= MAX_STRING_LENGTH &&
-    !/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/.test(text)
+    !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(text)
   );
 }
 

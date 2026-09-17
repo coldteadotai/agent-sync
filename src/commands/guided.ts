@@ -22,7 +22,7 @@ import { scanCodex } from "../scan/codex.js";
 import { scanOpencode } from "../scan/opencode.js";
 import type { ScanItem, ScanReport } from "../scan/types.js";
 import { createTheme } from "../tui/theme.js";
-import { Screen } from "../tui/terminal.js";
+import { Screen, visualWidth } from "../tui/terminal.js";
 import { createFlow, type Flow, type MultiGroup } from "../tui/components.js";
 import { Plain } from "../tui/plain.js";
 import { wordmarkLines } from "../tui/wordmark.js";
@@ -357,13 +357,25 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
 }
 
 // Full-content wrapping for consent blocks: every character lands on some
-// line; nothing hides past an ellipsis.
+// line; nothing hides past an ellipsis. Widths are visual CELLS, not JS
+// characters — CJK and emoji are two cells each, and a char-counted slice
+// would overflow the renderer's budget and get truncated right back.
 export function wrapDisplay(text: string, width: number): string[] {
-  if (text.length <= width) return [text];
+  if (visualWidth(text) <= width) return [text];
   const lines: string[] = [];
-  for (let index = 0; index < text.length; index += width) {
-    lines.push(index === 0 ? text.slice(0, width) : `    ${text.slice(index, index + width)}`);
+  let current = "";
+  let cells = 0;
+  for (const character of text) {
+    const characterCells = visualWidth(character);
+    if (cells + characterCells > width && current.length > 0) {
+      lines.push(lines.length === 0 ? current : `    ${current}`);
+      current = "";
+      cells = 0;
+    }
+    current += character;
+    cells += characterCells;
   }
+  lines.push(lines.length === 0 ? current : `    ${current}`);
   return lines;
 }
 

@@ -494,3 +494,26 @@ test("round 2: an unvalidated hostile name never reaches stderr unsanitized, and
     );
   }
 });
+
+
+test("round 3: wide characters cannot resurrect the consent elision, and Cf invisibles refuse", async () => {
+  const { wrapDisplay } = await import("../dist/main.js");
+  const wide = "\u5b57".repeat(120) + "WIDETAILMARK";
+  const wrapped = wrapDisplay(`  command: npx ${wide}`, 72);
+  assert.ok(wrapped.join("").includes("WIDETAILMARK"), "the wide tail fell off the wrap");
+  for (const line of wrapped) {
+    const content = line.startsWith("    ") ? line.slice(4) : line;
+    let cells = 0;
+    for (const ch of content) cells += /[\u1100-\u9fff]/.test(ch) ? 2 : 1;
+    assert.ok(cells <= 72, `a wrapped line overflows the cell budget: ${cells}`);
+  }
+
+  const clean = { name: "x", status: "needs_secret", reason: "", transport: "stdio", command: "npx", envNames: [] };
+  for (const dirty of ["a\u061cb", "a\u2060b", "a\u00adb"]) {
+    assert.throws(
+      () => planMcpRegistrations([{ ...clean, args: [dirty] }], ["x"], () => "v"),
+      /not clean strings/,
+      JSON.stringify(dirty),
+    );
+  }
+});
