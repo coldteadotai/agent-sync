@@ -224,7 +224,7 @@ export async function runGuided(io: CommandIo, mode: GuidedMode, overrides: Guid
 
   const ui = mode === "picker" ? pickerUi({ ...overrides, wordmark: true }) : plainUi(io, overrides);
   try {
-    ui.intro("found on this machine", `carry your agent setup anywhere ${"\u00b7"} v${__PKG_VERSION__}`, agentFacts(reports));
+    ui.intro("Found on this machine", `carry your agent setup anywhere ${"\u00b7"} v${__PKG_VERSION__}`, agentFacts(reports));
 
     const travel = await ui.groupMultiselect("What goes in the bundle?", groups);
     if (travel === null) return 2;
